@@ -285,6 +285,22 @@ async function fillImages(m, cards) {
   return n;
 }
 
+// Colecciones japonesas: imágenes de Limitless TCG (misma numeración que TCGdex; las energías usan una letra).
+const LIMITLESS = 'https://limitlesstcg.nyc3.cdn.digitaloceanspaces.com/tpc';
+const LIMITLESS_ENERGY = { DAR: 'D', FIG: 'F', FIR: 'R', GRA: 'G', LIG: 'L', MET: 'M', PSY: 'P', WAT: 'W' };
+async function fillImagesJapanese(m, cards) {
+  if (!m.japanese || m.imgLangs?.length) return 0;
+  let n = 0;
+  await pool(cards.filter(c => !c.im), 8, async card => {
+    const code = /^\d+$/.test(card.num) ? String(parseInt(card.num, 10)) : LIMITLESS_ENERGY[card.num];
+    if (!code) return;   // p. ej. las Mew B/G/R no tienen imagen allí
+    const url = size => `${LIMITLESS}/${m.id}/${m.id}_${code}_R_JP_${size}.png`;
+    const ok = await fetch(url('SM'), { method: 'HEAD' }).then(r => r.ok).catch(() => false);
+    if (ok) { card.im = [url('SM'), url('LG')]; n++; }
+  });
+  return n;
+}
+
 // ---------- main ----------
 async function main() {
   for (const d of ['sets', 'prices', 'history']) await mkdir(path.join(DATA, d), { recursive: true });
@@ -396,12 +412,12 @@ async function main() {
   }
 
   for (const m of index) {
-    if (m.imgLangs?.length || m.japanese) continue;
+    if (m.imgLangs?.length) continue;
     const file = path.join(DATA, 'sets', `${m.id}.json`);
     const c = await readJSON(file);
     if (!c || c.cards.every(x => x.im)) continue;
-    const n = await fillImages(m, c.cards);
-    if (n) { await writeJSON(file, c); console.log(`· ${m.id}: ${n} imágenes de pokemontcg.io`); }
+    const n = m.japanese ? await fillImagesJapanese(m, c.cards) : await fillImages(m, c.cards);
+    if (n) { await writeJSON(file, c); console.log(`· ${m.id}: ${n} imágenes de ${m.japanese ? 'Limitless' : 'pokemontcg.io'}`); }
   }
   const noLogo = index.filter(m => !m.logo);
   await fillLogos(index);
