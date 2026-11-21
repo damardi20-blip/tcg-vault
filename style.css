@@ -277,6 +277,11 @@ table.lang-prices th { text-align: left; color: var(--muted); font-weight: 500; 
 table.lang-prices td { padding: 7px 0; border-top: 1px solid var(--border); }
 table.lang-prices td:not(:first-child), table.lang-prices th:not(:first-child) { text-align: right; }
 table.lang-prices tr.mine td { color: var(--accent); }
+table.lang-prices tr.cond-row td { border-top: 0; padding: 0 0 8px; text-align: left; }
+.cond-chip { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 7px; border-radius: 999px; background: var(--surface-3, #1f2330); color: var(--text, #e8eaf0); font-size: 12px; white-space: nowrap; }
+.cond-chip b { color: var(--muted); font-weight: 600; margin-right: 2px; }
+.cond-chip.nm b { color: var(--accent); }
+.cond-chip small { color: var(--muted); }
 .links { display: flex; gap: 8px; margin-top: 12px; }
 .links a { flex: 1; text-align: center; text-decoration: none; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 10px; font-size: 14px; font-weight: 600; }
 .note { font-size: 12px; color: var(--muted); margin-top: 8px; }

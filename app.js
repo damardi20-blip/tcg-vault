@@ -227,6 +227,17 @@ function ctPrice(card, lang, variantKey) {
   const reverse = String(variantKey || '').startsWith('reverse');
   return d?.prices.ct?.[card.id]?.[lang]?.[reverse ? 'r' : 'n'] ?? null;
 }
+// Estados de CardTrader (0 NM, 1 SP, 2 MP, 3 PL, 4 PO) y su equivalente en los estados de la app.
+const CT_COND_SHORT = ['NM', 'SP', 'MP', 'PL', 'PO'];
+const COND_TO_CT = { MT: 0, NM: 0, EX: 1, GD: 2, LP: 2, PL: 3, PO: 4 };
+// Precio de CardTrader para el estado concreto de una carta (solo versión normal, no reverse).
+function ctCondPrice(card, lang, variantKey, cond) {
+  if (String(variantKey || '').startsWith('reverse')) return null;
+  const i = COND_TO_CT[cond];
+  if (!i) return null;   // NM/Mint: ya es el precio normal
+  const c = S.data.get(card.set)?.prices.ct?.[card.id]?.[lang]?.c;
+  return c?.[i] ?? null;
+}
 function marketPrice(card, lang, variantKey = defaultVariant(card)) {
   const cm = cmPrice(card, variantKey);
   const ct = ctPrice(card, lang, variantKey);
@@ -238,6 +249,9 @@ function itemUnit(item) {
   if (item.manual != null && item.manual !== '') return { value: Number(item.manual), src: 'Valor manual' };
   const card = S.cards.get(item.cardId);
   if (!card) return { value: null, src: '' };
+  // Si en CardTrader hay anuncios de su mismo estado, se usa ese precio directamente.
+  const byCond = !item.graded && S.settings.priceSource !== 'cm' ? ctCondPrice(card, item.lang, item.variant, item.cond) : null;
+  if (byCond != null) return { value: byCond, src: `CardTrader ${LANG_SHORT[item.lang]} · ${CT_COND_SHORT[COND_TO_CT[item.cond]]}` };
   const m = marketPrice(card, item.lang, item.variant);
   const f = condFactor(item);
   if (m.value != null && f !== 1) return { value: Math.round(m.value * f * 100) / 100, src: m.src + ` ×${f} (${item.cond})` };
@@ -828,9 +842,17 @@ function drawCard(el, card, st) {
   const variants = cardVariants(card);
   const hasRev = ctAll && Object.values(ctAll).some(x => x?.r);
 
-  const ctRows = ['es', 'en', 'it', 'ja'].map(l => {
+  let anyCond = false;
+  const ctRows = (set.japanese ? ['ja'] : ['es', 'en', 'it', 'ja']).map(l => {
     const c = ctAll?.[l];
-    return `<tr class="${l === lang ? 'mine' : ''}"><td>${LANG_LABEL[l]}</td><td>${eur(c?.n)}</td><td>${c?.nc ?? '—'}</td>${hasRev ? `<td>${eur(c?.r)}</td>` : ''}</tr>`;
+    let row = `<tr class="${l === lang ? 'mine' : ''}"><td>${LANG_LABEL[l]}</td><td>${eur(c?.n)}</td><td>${c?.nc ?? '—'}</td>${hasRev ? `<td>${eur(c?.r)}</td>` : ''}</tr>`;
+    // Si hay anuncios en otros estados, debajo: el más barato de cada estado y cuántos hay.
+    if (c?.c) {
+      anyCond = true;
+      const chips = c.c.map((p, i) => (p == null ? '' : `<span class="cond-chip${i === 0 ? ' nm' : ''}"><b>${CT_COND_SHORT[i]}</b> ${eur(p)} <small>×${c.cc[i]}</small></span>`)).join('');
+      row += `<tr class="cond-row${l === lang ? ' mine' : ''}"><td colspan="${hasRev ? 4 : 3}">${chips}</td></tr>`;
+    }
+    return row;
   }).join('');
 
   el.innerHTML = `
@@ -868,7 +890,8 @@ function drawCard(el, card, st) {
 
   <div class="panel">
     <div class="box-title">CardTrader por idioma <small>más barato en NM</small></div>
-    ${ctAll ? `<table class="lang-prices"><tr><th>Idioma</th><th>Desde</th><th>Anuncios</th>${hasRev ? '<th>Reverse</th>' : ''}</tr>${ctRows}</table>`
+    ${ctAll ? `<table class="lang-prices"><tr><th>Idioma</th><th>Desde (NM)</th><th>Anuncios</th>${hasRev ? '<th>Reverse</th>' : ''}</tr>${ctRows}</table>
+      ${anyCond ? `<div class="note">Por estado, el más barato y cuántos hay: <b>NM</b> casi nueva · <b>SP</b> poco jugada · <b>MP</b> bastante jugada · <b>PL</b> jugada · <b>PO</b> muy jugada. Tus cartas se valoran con el precio de su estado.</div>` : ''}`
       : `<div class="note" style="margin-top:0">${S.index.ct ? 'No hay anuncios de esta carta en CardTrader.' : 'Todavía no está conectado CardTrader. Cuando añadamos tu token aparecerá aquí el precio en español, inglés, italiano y japonés.'}</div>`}
   </div>
 
@@ -922,7 +945,9 @@ function drawCard(el, card, st) {
 function cardmarketUrl(card) {
   const set = setOf(card);
   const name = card.name.en || card.name.es || card.name.ja;
-  const q = set.japanese ? name : `${name} ${set.code} ${card.num}`;
+  // Cardmarket no encuentra nada si se añade el código de colección y el número: se busca solo por nombre
+  // (sin "Lv.12" y similares) y en la lista se elige la colección.
+  const q = String(name).replace(/\s+Lv\.?\s*\d+$/i, '').trim();
   return `https://www.cardmarket.com/es/Pokemon/Products/Search?searchString=${encodeURIComponent(q)}`;
 }
 function cardtraderUrl(card) {

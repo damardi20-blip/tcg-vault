@@ -190,6 +190,8 @@ async function cardmarketPrices() {
 
 // ---------- CardTrader ----------
 const CT_LANG = { jp: 'ja', ja: 'ja', en: 'en', es: 'es', it: 'it' };
+// Estados de CardTrader: 0 Mint/Near Mint, 1 Slightly Played, 2 Moderately Played, 3 Played, 4 Poor.
+const CT_COND = [/^(mint|near mint)$/i, /slightly/i, /moderately/i, /^played$/i, /poor/i];
 let ctExpansions = null;
 const CT_PARENT = { sma: 'sm115', rc: 'bw11' };   // subcolecciones → colección madre
 // Colecciones cuyo nombre en CardTrader es distinto: código de su expansión allí.
@@ -329,7 +331,8 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
       for (const p of products) {
         const pr = p.properties_hash || {};
         if (p.graded || pr.graded || pr.signed || pr.altered || pr.first_edition) continue;
-        if (pr.condition && !/mint/i.test(pr.condition)) continue;
+        const cond = CT_COND.findIndex(re => re.test(pr.condition || 'Near Mint'));
+        if (cond < 0) continue;
         const lang = CT_LANG[String(pr.pokemon_language || (setMeta.japanese ? 'ja' : '')).toLowerCase()];
         if (!lang) continue;
         const cents = p.price?.cents ?? p.price_cents;
@@ -337,10 +340,24 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
         const kind = pr.pokemon_reverse || pr.reverse ? 'r' : 'n';
         const l = e[lang] || (e[lang] = {});
         const price = cents / 100;
-        if (!l[kind] || price < l[kind]) l[kind] = price;
-        l[kind + 'c'] = (l[kind + 'c'] || 0) + (p.quantity || 1);
+        // Precio "Desde" y anuncios: solo NM/Mint (como hasta ahora).
+        if (cond === 0) {
+          if (!l[kind] || price < l[kind]) l[kind] = price;
+          l[kind + 'c'] = (l[kind + 'c'] || 0) + (p.quantity || 1);
+        }
+        // Precio más barato y anuncios por estado (NM, SP, MP, PL, PO) de la versión normal.
+        if (kind === 'n') {
+          const c = l.c || (l.c = [null, null, null, null, null]), cc = l.cc || (l.cc = [0, 0, 0, 0, 0]);
+          if (c[cond] == null || price < c[cond]) c[cond] = price;
+          cc[cond] += p.quantity || 1;
+        }
       }
     }
+  }
+  // El desglose por estado solo se guarda si hay algo más que NM (así los archivos no crecen de más).
+  for (const e of Object.values(out)) for (const l of Object.values(e)) {
+    if (typeof l !== 'object' || !l.cc) continue;
+    if (!l.cc.slice(1).some(Boolean)) { delete l.c; delete l.cc; }
   }
   return Object.keys(out).length || imgAdded || changed ? { prices: Object.keys(out).length ? out : null, imgAdded, changed } : null;
 }
