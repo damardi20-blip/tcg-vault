@@ -279,6 +279,52 @@ async function speciesNames() {
   return speciesCache;
 }
 
+// Suma los anuncios de una carta: precio más barato NM y anuncios (n/nc, r/rc), y por estado (c/cc).
+function addListings(e, products, setMeta) {
+  for (const p of products) {
+    const pr = p.properties_hash || {};
+    if (p.graded || pr.graded || pr.signed || pr.altered || pr.first_edition) continue;
+    const cond = CT_COND.findIndex(re => re.test(pr.condition || 'Near Mint'));
+    if (cond < 0) continue;
+    const lang = CT_LANG[String(pr.pokemon_language || (setMeta.japanese ? 'ja' : '')).toLowerCase()];
+    if (!lang) continue;
+    const cents = p.price?.cents ?? p.price_cents;
+    if (!cents || (p.price?.currency ?? p.price_currency ?? 'EUR') !== 'EUR') continue;
+    const kind = pr.pokemon_reverse || pr.reverse ? 'r' : 'n';
+    const l = e[lang] || (e[lang] = {});
+    const price = cents / 100;
+    if (cond === 0) {
+      if (!l[kind] || price < l[kind]) l[kind] = price;
+      l[kind + 'c'] = (l[kind + 'c'] || 0) + (p.quantity || 1);
+    }
+    if (kind === 'n') {
+      const c = l.c || (l.c = [null, null, null, null, null]), cc = l.cc || (l.cc = [0, 0, 0, 0, 0]);
+      if (c[cond] == null || price < c[cond]) c[cond] = price;
+      cc[cond] += p.quantity || 1;
+    }
+  }
+}
+
+// El listado de toda la colección que da CardTrader se deja algunos anuncios (p. ej. el Lugia de la
+// Colección Clásica a 180 € en español solo salía al pedir la carta sola). Las cartas con pocos anuncios
+// en algún idioma y precio de más de 10 € se vuelven a pedir una a una (como mucho CT_RECHECK al día).
+const CT_RECHECK = 2500;
+let ctRechecked = 0;
+async function recheckFew(out, setMeta) {
+  for (const e of Object.values(out)) {
+    if (ctRechecked >= CT_RECHECK) return;
+    const few = ['es', 'en', 'it', 'ja'].some(l => e[l]?.n > 10 && (e[l].nc || 0) <= 2);
+    if (!few) continue;
+    ctRechecked++;
+    const res = await ctFetch(`/marketplace/products?blueprint_id=${e.bp}`).catch(() => null);
+    await ctSleep(120);
+    const products = res?.[e.bp] || res?.[String(e.bp)];
+    if (!products?.length) continue;
+    for (const k of Object.keys(e)) if (k !== 'bp') delete e[k];
+    addListings(e, products, setMeta);
+  }
+}
+
 async function cardTraderForSet(setMeta, cards, parentMeta) {
   if (!ctExpansions) ctExpansions = ((await ctFetch('/expansions')) || []).filter(e => e.game_id === 5);
   const exps = ctExpansionsFor(setMeta, parentMeta);
@@ -367,32 +413,10 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
       const cardId = bpCard.get(Number(bpId));
       if (!cardId) continue;
       const e = out[cardId] || (out[cardId] = { bp: Number(bpId) });
-      for (const p of products) {
-        const pr = p.properties_hash || {};
-        if (p.graded || pr.graded || pr.signed || pr.altered || pr.first_edition) continue;
-        const cond = CT_COND.findIndex(re => re.test(pr.condition || 'Near Mint'));
-        if (cond < 0) continue;
-        const lang = CT_LANG[String(pr.pokemon_language || (setMeta.japanese ? 'ja' : '')).toLowerCase()];
-        if (!lang) continue;
-        const cents = p.price?.cents ?? p.price_cents;
-        if (!cents || (p.price?.currency ?? p.price_currency ?? 'EUR') !== 'EUR') continue;
-        const kind = pr.pokemon_reverse || pr.reverse ? 'r' : 'n';
-        const l = e[lang] || (e[lang] = {});
-        const price = cents / 100;
-        // Precio "Desde" y anuncios: solo NM/Mint (como hasta ahora).
-        if (cond === 0) {
-          if (!l[kind] || price < l[kind]) l[kind] = price;
-          l[kind + 'c'] = (l[kind + 'c'] || 0) + (p.quantity || 1);
-        }
-        // Precio más barato y anuncios por estado (NM, SP, MP, PL, PO) de la versión normal.
-        if (kind === 'n') {
-          const c = l.c || (l.c = [null, null, null, null, null]), cc = l.cc || (l.cc = [0, 0, 0, 0, 0]);
-          if (c[cond] == null || price < c[cond]) c[cond] = price;
-          cc[cond] += p.quantity || 1;
-        }
-      }
+      addListings(e, products, setMeta);
     }
   }
+  await recheckFew(out, setMeta);
   // El desglose por estado solo se guarda si hay algo más que NM (así los archivos no crecen de más).
   for (const e of Object.values(out)) for (const l of Object.values(e)) {
     if (typeof l !== 'object' || !l.cc) continue;
@@ -740,6 +764,7 @@ async function main() {
   await writeJSON(path.join(DATA, 'search.json'), search);
   await buildSignatures(index, search);
   if (!CT_TOKEN) console.log('· Sin CARDTRADER_TOKEN: se omiten los precios por idioma de CardTrader.');
+  else console.log(`· CardTrader: ${ctRechecked} cartas con pocos anuncios revisadas una a una.`);
   console.log(`✓ ${index.length} colecciones, ${search.length} cartas.`);
 }
 

@@ -559,3 +559,13 @@ function showResults({ candidates, lang }, text) {
     };
   });
 }
+
+// Para pruebas: parecido de una imagen con una carta concreta del catálogo (según su huella).
+export function simTo(photo, id) {
+  const all = ctx.cards(), k = all.findIndex(c => c.id === id);
+  if (k < 0 || !lastSigs) return null;
+  const fp = fingerprint(photo), o = k * FP_LEN;
+  let s = 0, nz = 0;
+  for (let i = 0; i < FP_LEN; i++) { s += lastSigs[o + i] * fp[i]; nz |= lastSigs[o + i]; }
+  return nz ? s / (FP_LEN * 1600) : 'sin huella';
+}
