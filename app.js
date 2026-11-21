@@ -376,7 +376,7 @@ function renderChart(el, labels, series, { height = 150, emptyMsg } = {}) {
       lastX = x(i);
       started = true;
     });
-    if (si === 0 && area) svg += `<path d="${area}L${lastX},${h - 18}L${firstX},${h - 18}Z" fill="url(#${gid})"/>`;
+    if (si === 0 && area) svg += `<path d="${area}L${lastX},${h - 18}L${firstX},${h - 18}Z" fill="url(#${gid})" stroke="none"/>`;
     svg += `<path d="${d}" stroke="${s.color}" stroke-width="${si === 0 ? 2.4 : 1.8}" fill="none" vector-effect="non-scaling-stroke"/>`;
   });
   axis += `<span class="axis-x" style="left:${((left / w) * 100).toFixed(2)}%">${esc(fmtDate(labels[0]))}</span><span class="axis-x end">${esc(fmtDate(labels[n - 1]))}</span>`;

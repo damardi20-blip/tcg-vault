@@ -41,8 +41,8 @@ h3 { font-size: 16px; margin: 0; }
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; justify-content: space-between;
   padding: calc(10px + var(--safe-top)) 16px 10px;
-  background: rgba(11, 13, 18, .88);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  /* Fondo sólido: con backdrop-filter el iPhone dibuja borroso el logo cuando la barra está fija arriba. */
+  background: #0b0d12;
   border-bottom: 1px solid rgba(255,255,255,.04);
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: -.01em; }
