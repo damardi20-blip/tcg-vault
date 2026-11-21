@@ -886,6 +886,7 @@ function drawCard(el, card, st) {
       <dt>Precio medio 1 día</dt><dd>${eur(n.avg1)}</dd>
     </dl>` : '<div class="note" style="margin-top:0">Cardmarket no tiene precio para esta variante.</div>'}
     <div class="note">Precio general de Cardmarket (todos los idiomas).</div>
+    ${card.cm && d.cards.some(o => o.id !== card.id && o.cm === card.cm) ? `<div class="note warn">Ojo: en los datos de Cardmarket esta carta comparte producto con otra versión (${esc(d.cards.filter(o => o.id !== card.id && o.cm === card.cm).map(o => cardCode(o)).join(', '))}), así que este precio puede ser el de la otra. Mira el de CardTrader.</div>` : ''}
   </div>
 
   <div class="panel">

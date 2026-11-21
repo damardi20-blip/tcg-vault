@@ -59,6 +59,7 @@ const NAME_ES = { base1: 'Base Set' };
 
 const TCGDEX = 'https://api.tcgdex.net/v2';
 const CM_PRICES = 'https://downloads.s3.cardmarket.com/productCatalog/priceGuide/price_guide_6.json';
+const CM_CATALOG = 'https://downloads.s3.cardmarket.com/productCatalog/productList/products_singles_6.json';
 const CT = 'https://api.cardtrader.com/api/v2';
 const CT_TOKEN = process.env.CARDTRADER_TOKEN || '';
 
@@ -185,7 +186,39 @@ async function cardmarketPrices() {
     if (row.length) map.set(p.idProduct, row);
   }
   console.log(`  ${map.size} productos con precio (${data.createdAt || ''})`);
-  return { map, created: data.createdAt || null };
+  // Catálogo de productos (nombre y expansión de cada uno): sirve para corregir cartas a las que
+  // TCGdex les pone el producto de otra versión (p. ej. Raikou ex 033, 121 y 136 con el mismo).
+  const cat = await getJSON(CM_CATALOG).catch(e => { console.warn('  ! ' + e.message); return null; });
+  const products = new Map(), siblings = new Map();
+  for (const p of cat?.products || []) {
+    products.set(p.idProduct, p);
+    const k = `${p.idExpansion}|${p.name}`;
+    (siblings.get(k) || siblings.set(k, []).get(k)).push(p.idProduct);
+  }
+  for (const v of siblings.values()) v.sort((a, b) => a - b);
+  return { map, created: data.createdAt || null, products, siblings };
+}
+
+// Si varias cartas de una colección comparten producto de Cardmarket y Cardmarket tiene exactamente
+// ese número de productos con el mismo nombre en esa expansión, se reparten en orden de número.
+function fixSharedCm(cards, cm) {
+  if (!cm.products?.size) return 0;
+  const groups = new Map();
+  for (const c of cards) if (c.cm) (groups.get(c.cm) || groups.set(c.cm, []).get(c.cm)).push(c);
+  let fixed = 0;
+  for (const [id, group] of groups) {
+    if (group.length < 2) continue;
+    const p = cm.products.get(id);
+    const sib = p && cm.siblings.get(`${p.idExpansion}|${p.name}`);
+    if (!sib || sib.length !== group.length) continue;
+    group.forEach((c, i) => {
+      if (c.cm === sib[i]) return;
+      for (const v of c.v || []) if (v.cm === c.cm) v.cm = sib[i];
+      c.cm = sib[i];
+      fixed++;
+    });
+  }
+  return fixed;
 }
 
 // ---------- CardTrader ----------
@@ -251,7 +284,13 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
   const exps = ctExpansionsFor(setMeta, parentMeta);
   if (!exps.length) return null;
   const byCm = new Map(), byCt = new Map();
+  // Un producto de Cardmarket que comparten varias cartas no sirve para saber cuál es cuál:
+  // esas cartas se emparejan por número y nombre.
+  const cmCount = new Map();
+  for (const c of cards) if (c.cm) cmCount.set(c.cm, (cmCount.get(c.cm) || 0) + 1);
+  const shared = new Set(cards.filter(c => c.cm && cmCount.get(c.cm) > 1).map(c => c.id));
   for (const c of cards) {
+    if (shared.has(c.id)) continue;
     if (c.cm) byCm.set(c.cm, c.id);
     for (const v of c.v || []) { if (v.cm) byCm.set(v.cm, c.id); if (v.ct) byCt.set(v.ct, c.id); }
   }
@@ -608,6 +647,9 @@ async function main() {
       const n = meta.japanese ? await fillImagesJapanese(meta, cached.cards) : await fillImages(meta, cached.cards);
       if (n) { await writeJSON(file, cached); console.log(`· ${s.id}: ${n} imágenes de ${meta.japanese ? 'Limitless / pokemon-card.com' : 'pokemontcg.io'}`); }
     }
+
+    const fixedCm = fixSharedCm(cached.cards, cm);
+    if (fixedCm) { await writeJSON(file, cached); console.log(`· ${s.id}: ${fixedCm} cartas con su producto de Cardmarket corregido`); }
 
     // Precios del día de esta colección
     const prices = { updated: today, cm: {}, ct: null };
