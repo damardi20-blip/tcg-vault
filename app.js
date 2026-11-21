@@ -334,13 +334,22 @@ function renderChart(el, labels, series, { height = 150, emptyMsg } = {}) {
   }
   let min = Math.min(...all), max = Math.max(...all);
   if (min === max) { min = min * 0.9; max = max * 1.1 || 1; }
+  const dataMin = min, dataMax = max;
   const pad = (max - min) * 0.12;
   min -= pad; max += pad;
   const n = labels.length;
-  const x = i => (n === 1 ? w / 2 : (i / (n - 1)) * (w - 8) + 4);
+  // Eje Y: precio mínimo, medio y máximo a la izquierda, con líneas guía suaves.
+  const axisFmt = v => (v >= 100 ? Math.round(v).toLocaleString('es-ES') : v.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })) + ' €';
+  const ticks = [dataMax, (dataMax + dataMin) / 2, dataMin];
+  const left = Math.min(70, Math.max(...ticks.map(t => axisFmt(t).length)) * 6.2 + 8);
+  const x = i => (n === 1 ? (w + left) / 2 : (i / (n - 1)) * (w - left - 4) + left);
   const y = v => h - 18 - ((v - min) / (max - min)) * (h - 30);
   const gid = 'g' + Math.random().toString(36).slice(2, 7);
   let svg = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${series[0].color}" stop-opacity=".35"/><stop offset="1" stop-color="${series[0].color}" stop-opacity="0"/></linearGradient></defs>`;
+  for (const t of ticks) {
+    svg += `<line x1="${left}" x2="${w}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}" stroke="#8a93a8" stroke-opacity=".18" stroke-dasharray="3 4"/>`;
+    svg += `<text x="${left - 6}" y="${(y(t) + 4).toFixed(1)}" fill="#8a93a8" font-size="11" text-anchor="end">${esc(axisFmt(t))}</text>`;
+  }
   series.forEach((s, si) => {
     let d = '', area = '', started = false, firstX = 0, lastX = 0;
     s.values.forEach((v, i) => {
@@ -354,7 +363,7 @@ function renderChart(el, labels, series, { height = 150, emptyMsg } = {}) {
     if (si === 0 && area) svg += `<path d="${area}L${lastX},${h - 18}L${firstX},${h - 18}Z" fill="url(#${gid})"/>`;
     svg += `<path d="${d}" stroke="${s.color}" stroke-width="${si === 0 ? 2.4 : 1.8}" fill="none" vector-effect="non-scaling-stroke"/>`;
   });
-  svg += `<text x="4" y="${h - 3}" fill="#8a93a8" font-size="11">${esc(fmtDate(labels[0]))}</text><text x="${w - 4}" y="${h - 3}" fill="#8a93a8" font-size="11" text-anchor="end">${esc(fmtDate(labels[n - 1]))}</text>`;
+  svg += `<text x="${left}" y="${h - 3}" fill="#8a93a8" font-size="11">${esc(fmtDate(labels[0]))}</text><text x="${w - 4}" y="${h - 3}" fill="#8a93a8" font-size="11" text-anchor="end">${esc(fmtDate(labels[n - 1]))}</text>`;
   svg += `<line class="cursor" x1="0" x2="0" y1="0" y2="${h - 18}" stroke="#fff" stroke-opacity=".3" visibility="hidden"/></svg><div class="chart-tip hidden"></div>`;
   el.innerHTML = svg;
   const tip = el.querySelector('.chart-tip');
@@ -362,7 +371,7 @@ function renderChart(el, labels, series, { height = 150, emptyMsg } = {}) {
   const move = e => {
     const r = el.getBoundingClientRect();
     const px = Math.min(Math.max(e.clientX - r.left, 0), r.width);
-    const i = Math.round((px / r.width) * (n - 1));
+    const i = n === 1 ? 0 : Math.min(n - 1, Math.max(0, Math.round((((px / r.width) * w - left) / (w - left - 4)) * (n - 1))));
     const cx = (x(i) / w) * r.width;
     cur.setAttribute('x1', x(i)); cur.setAttribute('x2', x(i)); cur.setAttribute('visibility', 'visible');
     tip.innerHTML = `<div class="muted">${esc(fmtDate(labels[i]))}</div>` + series.map(s => `<div><i style="background:${s.color}"></i>${esc(s.name ? s.name + ': ' : '')}<b>${eur(s.values[i])}</b></div>`).join('');
