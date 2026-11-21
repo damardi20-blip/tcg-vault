@@ -1,5 +1,6 @@
-// Service worker: permite abrir la app sin conexión y guarda las imágenes de cartas ya vistas.
-const VERSION = 'v17';
+// Service worker: la app abre al instante con lo guardado y se actualiza por detrás; también permite
+// usarla sin conexión y guarda las imágenes de cartas ya vistas.
+const VERSION = 'v18';
 const SHELL = `tcgvault-shell-${VERSION}`;
 const DATA = 'tcgvault-data';
 const IMAGES = 'tcgvault-images';
@@ -9,7 +10,7 @@ const SHELL_FILES = [
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_FILES.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
@@ -37,18 +38,32 @@ self.addEventListener('fetch', e => {
 
   if (url.origin !== location.origin) return;
 
-  // Datos de cartas y precios: primero internet (para tener el precio del día), si no la copia.
+  // Datos de cartas y precios: internet si contesta en 2,5 s (precio del día); si tarda más, la copia
+  // guardada al momento, y la respuesta de internet se guarda para la próxima vez.
   if (url.pathname.includes('/data/')) {
-    e.respondWith(fetch(req).then(res => {
-      if (res.ok) { const copy = res.clone(); caches.open(DATA).then(c => c.put(req, copy)); }
-      return res;
-    }).catch(() => caches.match(req, { ignoreSearch: true })));
+    e.respondWith((async () => {
+      const net = fetch(req).then(res => {
+        if (res.ok) { const copy = res.clone(); caches.open(DATA).then(c => c.put(req, copy)); }
+        return res;
+      });
+      const cached = await caches.match(req, { ignoreSearch: true });
+      if (!cached) return net;
+      const timeout = new Promise(r => setTimeout(() => r(null), 2500));
+      const res = await Promise.race([net.catch(() => null), timeout]);
+      e.waitUntil(net.catch(() => {}));
+      return res || cached;
+    })());
     return;
   }
 
-  // Resto de la app: internet si hay (para recibir mejoras), si no la copia guardada.
-  e.respondWith(fetch(req).then(res => {
-    if (res.ok) { const copy = res.clone(); caches.open(SHELL).then(c => c.put(req, copy)); }
-    return res;
-  }).catch(() => caches.match(req, { ignoreSearch: true }).then(r => r || caches.match('index.html'))));
+  // Resto de la app: la copia guardada al instante y, por detrás, la versión nueva para la próxima vez.
+  e.respondWith((async () => {
+    const cached = await caches.match(req, { ignoreSearch: true });
+    const net = fetch(req).then(res => {
+      if (res.ok) { const copy = res.clone(); caches.open(SHELL).then(c => c.put(req, copy)); }
+      return res;
+    });
+    if (cached) { e.waitUntil(net.catch(() => {})); return cached; }
+    return net.catch(() => caches.match('index.html'));
+  })());
 });

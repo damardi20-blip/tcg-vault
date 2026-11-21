@@ -17,22 +17,32 @@ const norm = s => String(s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ
 
 export function initScanner(context) {
   ctx = context;
-  $('#scan-btn').onclick = open;
+  $('#scan-btn').onclick = () => { added = 0; open(); };
   $('#scanner-close').onclick = close;
   $('#scanner-shot').onclick = () => { noCard = 0; captureFromVideo(); };
   $('#scanner-photo').onclick = () => $('#scanner-file').click();
   $('#scanner-file').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) captureFromFile(f); };
 }
 
-function status(msg) { $('#scanner-status').textContent = msg; }
+// Un mensaje con `hold` (ms) no se sobrescribe por los avisos automáticos durante ese tiempo.
+let statusHold = 0;
+function status(msg, hold = 0) {
+  if (!hold && Date.now() < statusHold) return;
+  if (hold) statusHold = Date.now() + hold;
+  $('#scanner-status').textContent = msg;
+}
 
-async function open() {
+let added = 0;   // cartas añadidas seguidas con «+» (escaneo en cadena)
+async function open(msg = null) {
   $('#scanner').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
   noCard = 0;
-  status('Encuadra la carta dentro del marco y pulsa el botón');
-  getWorker().catch(() => {});   // empieza a descargar el lector de texto mientras tanto
-  ctx.loadCards().then(loadSigs).catch(() => {});   // y las huellas de las cartas
+  statusHold = 0;
+  if (msg) status(msg, 3000); else status('Encuadra la carta dentro del marco y pulsa el botón');
+  // Con IA solo hace falta el índice de cartas. El lector de texto (~10 MB) y las huellas (~3 MB) del
+  // escáner sin IA solo se descargan si no hay internet (o si la IA falla, al usarlos).
+  ctx.loadCards().catch(() => {});
+  if (!aiAvailable()) { getWorker().catch(() => {}); ctx.loadCards().then(loadSigs).catch(() => {}); }
   if (!navigator.mediaDevices?.getUserMedia) {
     status('Este navegador no permite usar la cámara aquí. Pulsa «Foto».');
     return;
@@ -44,7 +54,7 @@ async function open() {
     const v = $('#scanner-video');
     v.srcObject = stream;
     await v.play().catch(() => {});
-    status('Encuadra la carta: se captura sola cuando la reconozca');
+    status('Encuadra la carta: se captura sola al dejarla quieta');
     autoScan();
   } catch (e) {
     console.warn(e);
@@ -82,7 +92,9 @@ function getWorker() {
 }
 
 // Recorta del vídeo la zona del marco amarillo (el vídeo se muestra con object-fit: cover).
-function cropFromVideo(maxH = 1400) {
+// `margin`: cuánto se amplía el recorte alrededor del marco (0,3 = un 30 % más por cada lado), sin
+// salirse del vídeo. Para la IA se usa con margen, por si la carta no cabe justa en el marco.
+function cropFromVideo(maxH = 1400, margin = 0) {
   const v = $('#scanner-video');
   if (!v.videoWidth) return null;
   const box = v.getBoundingClientRect();
@@ -90,10 +102,15 @@ function cropFromVideo(maxH = 1400) {
   const scale = Math.max(box.width / v.videoWidth, box.height / v.videoHeight);
   const offX = (box.width - v.videoWidth * scale) / 2;
   const offY = (box.height - v.videoHeight * scale) / 2;
-  const sx = (fr.left - box.left - offX) / scale;
-  const sy = (fr.top - box.top - offY) / scale;
-  const sw = fr.width / scale;
-  const sh = fr.height / scale;
+  let sx = (fr.left - box.left - offX) / scale;
+  let sy = (fr.top - box.top - offY) / scale;
+  let sw = fr.width / scale;
+  let sh = fr.height / scale;
+  if (margin) {
+    const x0 = Math.max(0, sx - sw * margin), y0 = Math.max(0, sy - sh * margin);
+    const x1 = Math.min(v.videoWidth, sx + sw * (1 + margin)), y1 = Math.min(v.videoHeight, sy + sh * (1 + margin));
+    sx = x0; sy = y0; sw = x1 - x0; sh = y1 - y0;
+  }
   const c = document.createElement('canvas');
   const outH = Math.min(maxH, Math.round(sh));
   c.height = outH;
@@ -126,7 +143,7 @@ async function captureFromVideo(hint = null) {
   clearTimeout(autoTimer);
   const c = cropFromVideo();
   if (!c) { status('La cámara aún no está lista. Prueba otra vez o usa «Foto».'); return; }
-  await analyze(c, true, hint);
+  await analyze(c, true, hint, cropFromVideo(1400, 0.3));
 }
 
 // ---------- escaneo automático ----------
@@ -212,7 +229,7 @@ async function captureFromFile(file) {
   await analyze(c, false);
 }
 
-async function analyze(canvas, cropped, hint = null) {
+async function analyze(canvas, cropped, hint = null, wide = null) {
   busy = true;
   $('#scanner-shot').disabled = true;
   $('#scanner-frame').classList.add('busy');
@@ -220,7 +237,7 @@ async function analyze(canvas, cropped, hint = null) {
     if (aiAvailable()) {
       status('Reconociendo la carta…');
       try {
-        const info = await aiIdentify(canvas);
+        const info = await aiIdentify(wide || canvas);
         if (info && info.found === false) {
           status('No veo ninguna carta. Acércala al marco y pulsa el botón.');
           noCard++;
@@ -686,12 +703,14 @@ function showResults({ candidates, lang }, text) {
     const list = candidates.map(({ card }) => {
       const l = lang && (ctx.sets().get(card.set).langs.includes(lang)) ? lang : null;
       const price = ctx.price(card, l);
-      return `<button class="cand" data-id="${esc(card.id)}" data-lang="${l || ''}">${ctx.thumbHTML(card, l || undefined)}
+      return `<div class="cand-row"><button class="cand" data-id="${esc(card.id)}" data-lang="${l || ''}">${ctx.thumbHTML(card, l || undefined)}
         <div class="info"><b>${esc(ctx.cardName(card, l || undefined))}</b><span class="muted">${esc(ctx.cardCode(card))}</span></div>
-        <div class="price">${ctx.eur(price)}</div></button>`;
+        <div class="price">${ctx.eur(price)}</div></button>
+        <button class="cand-add" data-id="${esc(card.id)}" data-lang="${l || ''}" aria-label="Añadir y escanear la siguiente">+</button></div>`;
     }).join('');
     el.innerHTML = `<div class="scan-results">
       <h2>${candidates.length ? (candidates.length === 1 || candidates[0].s - (candidates[1]?.s || 0) >= 3 ? '¿Es esta carta?' : '¿Cuál de estas es?') : 'No he reconocido la carta'}</h2>
+      ${candidates.length ? '<div class="note">Pulsa <b>+</b> para añadirla (1 copia, NM) y escanear la siguiente, o pulsa la carta para ver su ficha.</div>' : ''}
       ${lang ? `<div class="note">Parece una carta en ${({ es: 'español', en: 'inglés', it: 'italiano', ja: 'japonés' })[lang]}.</div>` : ''}
       ${list || '<p class="muted">Prueba con más luz, sin reflejos y con la carta llenando el marco. También puedes buscarla por nombre o número.</p>'}
       <div class="form" style="margin-top:14px">
@@ -702,6 +721,14 @@ function showResults({ candidates, lang }, text) {
       <details style="margin-top:12px"><summary class="muted">${text.startsWith('Reconocida con IA') ? 'Qué ha leído la IA' : 'Texto leído'}</summary><div class="ocr-text">${esc(text.trim() || '(nada)')}</div></details>
     </div>`;
     el.querySelectorAll('.cand').forEach(b => b.onclick = () => ctx.openCard(b.dataset.id, b.dataset.lang || null));
+    // Escaneo en cadena: «+» añade la carta (1 copia, NM) y vuelve a abrir la cámara para la siguiente.
+    el.querySelectorAll('.cand-add').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      const msg = await ctx.quickAdd(b.dataset.id, b.dataset.lang || null);
+      ctx.closeScannerSheet();
+      added++;
+      open(msg ? `✓ ${msg} · ${added} en esta sesión. Siguiente carta…` : null);
+    });
     el.querySelector('#scan-again').onclick = () => { ctx.closeScannerSheet(); open(); };
     const q = el.querySelector('#scan-q');
     q.oninput = () => {

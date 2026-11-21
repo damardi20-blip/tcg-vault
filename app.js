@@ -1310,9 +1310,32 @@ async function boot() {
     ensureSets,
     fallbackCards: () => (S.ui.catSet && S.data.get(S.ui.catSet)?.cards) || [],
     openSheet, openCard, closeScannerSheet: closeSheet,
+    // Añadir rápido desde el escáner: 1 copia, NM, versión normal y el idioma que leyó la IA.
+    quickAdd: async (cardId, lang) => {
+      await ensureSets([setIdOf(cardId)]).catch(() => {});
+      const card = S.cards.get(cardId);
+      if (!card) return null;
+      const l = setOf(card).langs.includes(lang) ? lang : defaultLang(card);
+      const item = { id: uid(), cardId, setId: card.set, lang: l, variant: defaultVariant(card), cond: 'NM', qty: 1, graded: null,
+        buy: null, buyDate: null, manual: null, notes: '', added: Date.now() };
+      upsertItem(item);
+      if (S.wish[cardId]) { delete S.wish[cardId]; save(K.wish, S.wish); Sync.deleteWish(cardId); }
+      render();
+      return `${cardName(card, l)} (${LANG_SHORT[l]}) · ${eur(itemTotal(item))}`;
+    },
   });
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // Cuando llega una versión nueva de la app: si se acaba de abrir, se recarga sola; si no, se avisa.
+    const started = Date.now(), hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloaded || !hadController) return;   // la primera instalación no es una versión nueva
+      if (Date.now() - started < 8000 && document.getElementById('sheet').classList.contains('hidden')) { reloaded = true; location.reload(); }
+      else toast('Hay una versión nueva de la app: ciérrala y vuelve a abrirla para verla.');
+    });
+  }
 }
 
 boot();
