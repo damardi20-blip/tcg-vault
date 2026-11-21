@@ -19,7 +19,7 @@ export function initScanner(context) {
   ctx = context;
   $('#scan-btn').onclick = open;
   $('#scanner-close').onclick = close;
-  $('#scanner-shot').onclick = captureFromVideo;
+  $('#scanner-shot').onclick = () => captureFromVideo();
   $('#scanner-photo').onclick = () => $('#scanner-file').click();
   $('#scanner-file').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) captureFromFile(f); };
 }
@@ -43,6 +43,8 @@ async function open() {
     const v = $('#scanner-video');
     v.srcObject = stream;
     await v.play().catch(() => {});
+    status('Encuadra la carta: se captura sola cuando la reconozca');
+    autoScan();
   } catch (e) {
     console.warn(e);
     status('No se pudo abrir la cámara (revisa los permisos). Puedes pulsar «Foto».');
@@ -50,6 +52,7 @@ async function open() {
 }
 
 function close() {
+  clearTimeout(autoTimer);
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null;
   $('#scanner-video').srcObject = null;
@@ -78,7 +81,7 @@ function getWorker() {
 }
 
 // Recorta del vídeo la zona del marco amarillo (el vídeo se muestra con object-fit: cover).
-function cropFromVideo() {
+function cropFromVideo(maxH = 1400) {
   const v = $('#scanner-video');
   if (!v.videoWidth) return null;
   const box = v.getBoundingClientRect();
@@ -91,7 +94,7 @@ function cropFromVideo() {
   const sw = fr.width / scale;
   const sh = fr.height / scale;
   const c = document.createElement('canvas');
-  const outH = Math.min(1400, Math.round(sh));
+  const outH = Math.min(maxH, Math.round(sh));
   c.height = outH;
   c.width = Math.round(outH * (sw / sh));
   c.getContext('2d').drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
@@ -117,11 +120,51 @@ function region(src, x0, y0, x1, y1, upscale = 2) {
   return c;
 }
 
-async function captureFromVideo() {
+async function captureFromVideo(hint = null) {
   if (busy) return;
+  clearTimeout(autoTimer);
   const c = cropFromVideo();
   if (!c) { status('La cámara aún no está lista. Prueba otra vez o usa «Foto».'); return; }
-  await analyze(c, true);
+  await analyze(c, true, hint);
+}
+
+// ---------- escaneo automático ----------
+// Con la cámara abierta, cada medio segundo compara lo que ve con la huella de todas las cartas.
+// Cuando la misma carta sale la primera 3 veces seguidas con un parecido claro, captura sola
+// (con la imagen a máxima resolución) sin tener que pulsar el botón.
+let autoTimer = null;
+function autoScan() {
+  let lastId = null, streak = 0, misses = 0;
+  const tick = async () => {
+    if (!stream || busy) return;
+    try {
+      await ctx.loadCards();
+      if (!(await loadSigs())) { autoTimer = setTimeout(tick, 800); return; }
+      const c = cropFromVideo(560);
+      if (c) {
+        const vis = [...visualSearch(findCard(c, true), c).entries()].sort((a, b) => b[1] - a[1]);
+        const [id, sim] = vis[0] || [];
+        const margin = sim - (vis[1]?.[1] ?? 0);
+        // Con una carta delante el parecido pasa de 1,18; con solo fondo no llega (medido con pruebas).
+        // Si dos cartas tienen la misma ilustración (reimpresiones), el margen es ~0 y se exige algo más.
+        if (id && sim >= (margin < 0.05 ? 1.2 : 1.18)) {
+          streak = id === lastId || margin < 0.05 ? streak + 1 : 1;
+          misses = 0;
+          lastId = id;
+          const card = ctx.cards().find(x => x.id === id);
+          status(streak >= 2 ? `¿${ctx.cardName(card)}? Mantén la carta quieta…` : 'Buscando la carta…');
+          if (streak >= 3) { captureFromVideo(id); return; }
+        } else {
+          streak = 0; lastId = null; misses++;
+          status(misses > 12 ? '¿Reflejos? Inclina un poco la carta, o pulsa el botón para leerla igualmente'
+            : 'Encuadra la carta: se captura sola cuando la reconozca');
+        }
+      }
+    } catch (e) { console.warn(e); }
+    autoTimer = setTimeout(tick, 450);
+  };
+  clearTimeout(autoTimer);
+  autoTimer = setTimeout(tick, 600);
 }
 
 async function captureFromFile(file) {
@@ -136,12 +179,12 @@ async function captureFromFile(file) {
   await analyze(c, false);
 }
 
-async function analyze(canvas, cropped) {
+async function analyze(canvas, cropped, hint = null) {
   busy = true;
   $('#scanner-shot').disabled = true;
   $('#scanner-frame').classList.add('busy');
   try {
-    const { result, text } = await recognize(canvas, cropped);
+    const { result, text } = await recognize(canvas, cropped, hint);
     close();
     showResults(result, text);
   } catch (e) {
@@ -151,16 +194,19 @@ async function analyze(canvas, cropped) {
     busy = false;
     $('#scanner-shot').disabled = false;
     $('#scanner-frame').classList.remove('busy');
+    if (stream) autoScan();   // si algo falló y la cámara sigue abierta, sigue buscando
   }
 }
 
 // Todo el reconocimiento (sin pantallas): también se usa para probar el escáner con fotos.
-export async function recognize(canvas, cropped = true) {
+export async function recognize(canvas, cropped = true, hint = null) {
   const card = findCard(canvas, cropped);
   status('Preparando el lector…');
   const [worker] = await Promise.all([getWorker(), ctx.loadCards(), loadSigs().catch(() => null)]);
   status('Buscando la ilustración…');
-  const visual = visualSearch(card);
+  const visual = visualSearch(card, canvas);
+  // La carta que el escaneo automático vio varias veces seguidas cuenta como pista fuerte.
+  if (hint) visual.set(hint, Math.max(visual.get(hint) ?? 0, 1.2));
   status('Leyendo la carta…');
   const texts = [];
   // Número de carta: esquinas de abajo, solo dígitos y "/", bien ampliadas.
@@ -296,14 +342,16 @@ function fingerprint(src) {
   }
   return v;
 }
-// Devuelve un mapa id de carta → parecido (0-1) con las 60 más parecidas de todo el catálogo.
-export function visualSearch(photo) {
+// Devuelve un mapa id de carta → parecido con las 60 más parecidas de todo el catálogo
+// (≈1,2 o más si es la misma carta; ≈0,9-1,1 si no se parece).
+export function visualSearch(photo, alt = null) {
   const out = new Map();
   const all = ctx.cards();
   const sigs = sigsPromise && lastSigs;
   if (!sigs || sigs.length < all.length * FP_LEN) return out;
   // Varias versiones del recorte (por si los bordes no son exactos): se queda con el mejor parecido.
-  const fps = [0, 0.03, -0.03].map(m => fingerprint(inset(photo, m)));
+  // y, si el recorte automático pudo equivocarse, también la imagen sin recortar.
+  const fps = [photo, alt].filter((x, i) => x && (i === 0 || x !== photo)).flatMap(src => [0, 0.03, -0.03].map(m => fingerprint(inset(src, m))));
   const top = [];
   for (let k = 0; k < all.length; k++) {
     const o = k * FP_LEN;
@@ -397,8 +445,8 @@ export function match(rawText, visual = new Map()) {
     s += nameHit;
     // Parecido de la ilustración con todo el catálogo (las 60 más parecidas).
     const vis = visual.get(card.id);
-    if (vis != null) s += Math.max(0, vis - 0.3) * 14;
-    if (s >= 3 || (vis != null && vis > 0.45)) scored.push({ card, s, vis });
+    if (vis != null) s += Math.max(0, vis - 0.9) * 30;
+    if (s >= 3 || (vis != null && vis > 1.0)) scored.push({ card, s, vis });
   }
   scored.sort((a, b) => b.s - a.s);
   return { candidates: scored.slice(0, 40), lang, nums };

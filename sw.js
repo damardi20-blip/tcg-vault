@@ -1,11 +1,11 @@
 // Service worker: permite abrir la app sin conexión y guarda las imágenes de cartas ya vistas.
-const VERSION = 'v11';
+const VERSION = 'v12';
 const SHELL = `tcgvault-shell-${VERSION}`;
 const DATA = 'tcgvault-data';
 const IMAGES = 'tcgvault-images';
 const SHELL_FILES = [
   './', 'index.html', 'style.css', 'app.js', 'scanner.js', 'firebase-config.js', 'manifest.json',
-  'icons/icon-192.png', 'icons/apple-touch-icon.png',
+  'icons/icon-192.png', 'icons/apple-touch-icon.png', 'icons/logo-header.png',
 ];
 
 self.addEventListener('install', e => {

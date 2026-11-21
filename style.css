@@ -81,8 +81,7 @@ main { max-width: 860px; margin: 0 auto; padding: 14px 16px 24px; }
 .chart .axis-y { transform: translateY(-50%); }
 .chart .axis-x { bottom: 1px; }
 .chart .axis-x.end { right: 4px; }
-.brand-name { font-weight: 800; font-style: italic; letter-spacing: .5px; }
-.brand-name em { color: #e5b53a; font-weight: 700; margin-left: 2px; }
+.brand img.brand-logo { height: 40px; width: auto; border-radius: 0; }
 .chart .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 13px; text-align: center; padding: 0 20px; }
 .chart-tip {
   position: absolute; top: 0; pointer-events: none; transform: translateX(-50%);
