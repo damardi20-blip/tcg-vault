@@ -95,6 +95,16 @@ async function buildSetCards(setId, langs, detailLang) {
     }
   }
   const imgLangs = langs.filter(l => (lists[l]?.cards || []).some(c => c.image));
+  // Cartas sueltas sin imagen en ningún idioma (p. ej. las Mew B/G/R): se marcan para buscarlas en CardTrader.
+  // TCGdex a veces anuncia una imagen que no existe (404), así que se comprueba de verdad.
+  const imgOf = new Map();
+  for (const l of langs) for (const c of lists[l]?.cards || []) if (c.image && !imgOf.has(c.id)) imgOf.set(c.id, c.image);
+  if (imgLangs.length) {
+    const ok = await pool([...cards.keys()], 10, id => (imgOf.has(id)
+      ? fetch(`${imgOf.get(id)}/low.webp`, { method: 'HEAD' }).then(r => r.status !== 404).catch(() => true)
+      : false));
+    [...cards.values()].forEach((c, i) => { if (!ok[i]) c.noimg = 1; });
+  }
   const details = await pool([...cards.keys()], 10, id =>
     getJSON(`${TCGDEX}/${detailLang}/cards/${encodeURIComponent(id)}`).catch(e => { console.warn('  ! ' + e.message); return null; }));
   for (const d of details) {
@@ -158,44 +168,89 @@ async function cardmarketPrices() {
 // ---------- CardTrader ----------
 const CT_LANG = { jp: 'ja', ja: 'ja', en: 'en', es: 'es', it: 'it' };
 let ctExpansions = null;
+const CT_PARENT = { sma: 'sm115', rc: 'bw11' };   // subcolecciones → colección madre
+// Colecciones cuyo nombre en CardTrader es distinto: código de su expansión allí.
+const CT_CODE = { exu: 'suf', 'swsh10.5': 'pkmgo', ex7: 'trr', ex4: 'exma' };
+const ctCache = new Map();   // expansion_id → { bps, market } (varias colecciones comparten expansión)
 const ctFetch = p => getJSON(CT + p, { Authorization: `Bearer ${CT_TOKEN}` });
+const ctSleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function cardTraderForSet(setMeta, cards) {
-  if (!ctExpansions) {
-    const all = await ctFetch('/expansions');
-    ctExpansions = all.filter(e => e.game_id === 5);
-    if (!ctExpansions.length) ctExpansions = all;
+async function ctExpansion(id) {
+  if (!ctCache.has(id)) {
+    const bps = await ctFetch(`/blueprints/export?expansion_id=${id}`).catch(e => { console.warn('  ! ' + e.message); return []; });
+    await ctSleep(150);
+    const market = await ctFetch(`/marketplace/products?expansion_id=${id}`).catch(e => { console.warn('  ! ' + e.message); return {}; });
+    await ctSleep(150);
+    ctCache.set(id, { bps: bps || [], market: market || {} });
   }
-  const names = [setMeta.name.en, setMeta.name.ja, setMeta.code].filter(Boolean).map(normName);
-  let exps = ctExpansions.filter(e => names.includes(normName(e.name)) || (setMeta.code && normName(e.code) === normName(setMeta.code)));
-  if (setMeta.japanese) exps = exps.filter(e => /japan|jp/i.test(`${e.name} ${e.code}`));
-  else exps = exps.filter(e => !/japan|jp\b/i.test(`${e.name}`));
+  return ctCache.get(id);
+}
+
+// Expansiones de CardTrader candidatas para una colección: mismo nombre, mismo código, o las de la colección
+// "madre" (las Galerías de Entrenador, Shiny Vault… van dentro de la expansión principal en CardTrader).
+function ctExpansionsFor(setMeta, parentMeta) {
+  const metas = [setMeta, parentMeta].filter(Boolean);
+  const names = new Set(metas.flatMap(m => [m.name.en, m.name.ja]).filter(Boolean).map(normName));
+  const codes = new Set(metas.map(m => normName(m.code)).filter(Boolean));
+  return ctExpansions.filter(e => {
+    const jp = /japan|\bjp\b/i.test(`${e.name} ${e.code}`);
+    if (!!setMeta.japanese !== jp) return false;
+    const n = normName(e.name);
+    return e.code === CT_CODE[setMeta.id] || names.has(n) || names.has(n.replace(/ jp$/, '')) || codes.has(normName(e.code));
+  });
+}
+
+// Precio más barato en NM/Mint por idioma de cada carta. Las cartas se emparejan con los "blueprints" de
+// CardTrader por el id de producto de Cardmarket (lo traen los dos) y, si no hay, por número y nombre.
+async function cardTraderForSet(setMeta, cards, parentMeta) {
+  if (!ctExpansions) ctExpansions = ((await ctFetch('/expansions')) || []).filter(e => e.game_id === 5);
+  const exps = ctExpansionsFor(setMeta, parentMeta);
   if (!exps.length) return null;
-  const byBp = new Map();
-  for (const c of cards) for (const v of c.v || []) if (v.ct) byBp.set(v.ct, c.id);
+  const byCm = new Map(), byCt = new Map();
+  for (const c of cards) {
+    if (c.cm) byCm.set(c.cm, c.id);
+    for (const v of c.v || []) { if (v.cm) byCm.set(v.cm, c.id); if (v.ct) byCt.set(v.ct, c.id); }
+  }
+  // Si no casan por id de Cardmarket: por número y nombre (en las japonesas, solo por número,
+  // porque CardTrader las tiene con el nombre en inglés y otros ids de Cardmarket).
+  const numKey = n => String(n ?? '').split('/')[0].replace(/^0+(?=\w)/, '').toUpperCase();
+  const fallbackKey = (num, name) => (setMeta.japanese ? numKey(num) : `${numKey(num)}|${normName(name)}`);
   const out = {};
+  let imgAdded = 0;
   for (const exp of exps) {
-    const needNumbers = cards.some(c => !(c.v || []).some(v => v.ct));
-    if (needNumbers) {
-      const bps = await ctFetch(`/blueprints/export?expansion_id=${exp.id}`).catch(() => []);
-      const byNum = new Map(cards.map(c => [String(c.num).replace(/^0+/, '').toUpperCase(), c.id]));
-      for (const bp of bps || []) {
-        if (byBp.has(bp.id)) continue;
-        const raw = bp.fixed_properties?.collector_number ?? '';
-        const id = byNum.get(String(raw).split('/')[0].replace(/^0+/, '').toUpperCase());
-        if (id) byBp.set(bp.id, id);
-      }
+    const { bps, market } = await ctExpansion(exp.id);
+    const bpCard = new Map();
+    const matched = new Set();
+    for (const bp of bps) {
+      let id = byCt.get(bp.id);
+      for (const cm of bp.card_market_ids || []) if (!id) id = byCm.get(cm);
+      if (id) { bpCard.set(bp.id, id); matched.add(id); }
     }
-    const market = await ctFetch(`/marketplace/products?expansion_id=${exp.id}`).catch(() => ({}));
-    for (const [bpId, products] of Object.entries(market || {})) {
-      const cardId = byBp.get(Number(bpId));
+    const rest = new Map(cards.filter(c => !matched.has(c.id)).map(c => [fallbackKey(c.num, c.name.en || c.name.ja), c.id]));
+    if (rest.size) for (const bp of bps) {
+      if (bpCard.has(bp.id) || !bp.fixed_properties?.collector_number) continue;
+      const id = rest.get(fallbackKey(bp.fixed_properties.collector_number, bp.name));
+      if (id) bpCard.set(bp.id, id);
+    }
+    // Imagen de CardTrader para las cartas que no tienen en ningún otro sitio.
+    const need = new Set(cards.filter(c => !c.im && (c.noimg || !setMeta.imgLangs?.length)).map(c => c.id));
+    if (need.size) for (const bp of bps) {
+      const id = bpCard.get(bp.id);
+      if (!need.has(id) || !bp.image?.url) continue;
+      const card = cards.find(c => c.id === id);
+      card.im = [`https://www.cardtrader.com${bp.image.show?.url || bp.image.url}`, `https://www.cardtrader.com${bp.image.url}`];
+      need.delete(id);
+      imgAdded++;
+    }
+    for (const [bpId, products] of Object.entries(market)) {
+      const cardId = bpCard.get(Number(bpId));
       if (!cardId) continue;
       const e = out[cardId] || (out[cardId] = { bp: Number(bpId) });
       for (const p of products) {
         const pr = p.properties_hash || {};
-        if (p.graded || pr.graded) continue;
+        if (p.graded || pr.graded || pr.signed || pr.altered || pr.first_edition) continue;
         if (pr.condition && !/mint/i.test(pr.condition)) continue;
-        const lang = CT_LANG[String(pr.pokemon_language || '').toLowerCase()];
+        const lang = CT_LANG[String(pr.pokemon_language || (setMeta.japanese ? 'ja' : '')).toLowerCase()];
         if (!lang) continue;
         const cents = p.price?.cents ?? p.price_cents;
         if (!cents || (p.price?.currency ?? p.price_currency ?? 'EUR') !== 'EUR') continue;
@@ -207,7 +262,7 @@ async function cardTraderForSet(setMeta, cards) {
       }
     }
   }
-  return out;
+  return Object.keys(out).length || imgAdded ? { prices: Object.keys(out).length ? out : null, imgAdded } : null;
 }
 
 // ---------- logos e imágenes que faltan en TCGdex ----------
@@ -356,6 +411,11 @@ async function main() {
       const built = await buildSetCards(s.id, s.langs, s.detailLang);
       if (!built) { console.log('no disponible'); continue; }
       const info = built.info;
+      // Si TCGdex falló con alguna carta (503…), se conserva lo que teníamos de ella.
+      if (cached) {
+        const prevCards = new Map(cached.cards.map(c => [c.id, c]));
+        built.cards = built.cards.map(c => (!c.v && prevCards.has(c.id) ? { ...prevCards.get(c.id), name: c.name } : c));
+      }
       const names = {};
       for (const l of s.langs) {
         const x = l === s.detailLang ? info : await getJSON(`${TCGDEX}/${l}/sets/${encodeURIComponent(s.id)}`).catch(() => null);
@@ -377,6 +437,11 @@ async function main() {
       meta = cached.set;
     }
     index.push(meta);
+    // Colecciones sin imágenes en TCGdex: se buscan en otras webs (antes de CardTrader, que es el último recurso).
+    if (!meta.imgLangs?.length && !cached.cards.every(x => x.im)) {
+      const n = meta.japanese ? await fillImagesJapanese(meta, cached.cards) : await fillImages(meta, cached.cards);
+      if (n) { await writeJSON(file, cached); console.log(`· ${s.id}: ${n} imágenes de ${meta.japanese ? 'Limitless / pokemon-card.com' : 'pokemontcg.io'}`); }
+    }
     for (const c of cached.cards) {
       const row = [c.id, s.id, c.num, c.name.en || c.name.ja || c.name.es || ''];
       const es = c.name.es && c.name.es !== row[3] ? c.name.es : 0;
@@ -396,8 +461,11 @@ async function main() {
     for (const id of products) if (cm.map.has(id)) prices.cm[id] = cm.map.get(id);
     if (CT_TOKEN) {
       try {
-        const ct = await cardTraderForSet(meta, cached.cards);
-        if (ct) { prices.ct = ct; ctOk = true; }
+        const pid = CT_PARENT[s.id] || s.id.replace(/(tg|sv|gg|cc|-c)$/, '');
+        const parent = pid !== s.id ? (await readJSON(path.join(DATA, 'sets', `${pid}.json`)))?.set : null;
+        const ct = await cardTraderForSet(meta, cached.cards, parent);
+        if (ct?.prices) { prices.ct = ct.prices; ctOk = true; }
+        if (ct?.imgAdded) { await writeJSON(file, cached); console.log(`· ${s.id}: ${ct.imgAdded} imágenes de CardTrader`); }
       } catch (e) { console.warn(`  ! CardTrader ${s.id}: ${e.message}`); }
     }
     await writeJSON(path.join(DATA, 'prices', `${s.id}.json`), prices);
@@ -439,14 +507,6 @@ async function main() {
     index.sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9));
   }
 
-  for (const m of index) {
-    if (m.imgLangs?.length) continue;
-    const file = path.join(DATA, 'sets', `${m.id}.json`);
-    const c = await readJSON(file);
-    if (!c || c.cards.every(x => x.im)) continue;
-    const n = m.japanese ? await fillImagesJapanese(m, c.cards) : await fillImages(m, c.cards);
-    if (n) { await writeJSON(file, c); console.log(`· ${m.id}: ${n} imágenes de ${m.japanese ? 'Limitless / pokemon-card.com' : 'pokemontcg.io'}`); }
-  }
   const noLogo = index.filter(m => !m.logo);
   await fillLogos(index);
   for (const m of noLogo) if (m.logo) {   // se guarda en el archivo de la colección para no buscarlo cada día
