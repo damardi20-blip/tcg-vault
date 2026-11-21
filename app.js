@@ -261,22 +261,46 @@ function collectionStats() {
   return { value, cost, gain: costValue - cost, gainPct: cost ? ((costValue - cost) / cost) * 100 : null, count, unique };
 }
 
+// Mientras no haya histórico propio (se guarda un precio al día), la gráfica se completa con una curva
+// aproximada a partir de las medias de Cardmarket: media 30 días ≈ hace 15 días, media 7 ≈ hace 4 días,
+// media 1 día ≈ ayer y tendencia = hoy.
+const ESTIMATE_UNTIL = 15;   // con menos días reales que esto, se añade la parte aproximada
+const addDays = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+function cmEstimate(row, end) {
+  if (!row || !end) return null;
+  const anchors = [[-15, row.avg30], [-4, row.avg7], [-1, row.avg1], [0, row.trend ?? row.avg1 ?? row.avg7]].filter(([, v]) => v != null);
+  if (anchors.length < 2) return null;
+  const out = new Map();
+  for (let k = 0; k < anchors.length - 1; k++) {
+    const [d0, v0] = anchors[k], [d1, v1] = anchors[k + 1];
+    for (let d = d0; d < d1; d++) out.set(addDays(end, d), Math.round((v0 + ((v1 - v0) * (d - d0)) / (d1 - d0)) * 100) / 100);
+  }
+  out.set(addDays(end, anchors[anchors.length - 1][0]), anchors[anchors.length - 1][1]);
+  return out;
+}
+
 // Valor de la colección en cada día (con los precios guardados cada día de cada colección).
 function valueSeries() {
   const all = new Set();
   for (const it of S.items) for (const d of S.data.get(setIdOf(it.cardId))?.history.dates || []) all.add(d);
+  const realDays = all.size;
+  const estimated = realDays < ESTIMATE_UNTIL && S.items.length > 0;
+  const end = [...all].sort().pop() || S.index.updated;
+  if (estimated) for (let k = -15; k <= 0; k++) all.add(addDays(end, k));
   const dates = [...all].sort();
   const n = dates.length;
   const out = new Array(n).fill(0);
   for (const it of S.items) {
     const card = S.cards.get(it.cardId);
     const d = card && S.data.get(card.set);
-    const from = it.buyDate || (it.added ? new Date(it.added).toISOString().slice(0, 10) : '0000');
+    // Se muestra el valor de lo que tienes hoy a lo largo del tiempo (desde la fecha de compra, si la pusiste).
+    const from = it.buyDate || '0000';
     const nowUnit = itemUnit(it).value || 0;
     const info = card ? cmInfo(card, it.variant) : null;
     const cmHist = info && d?.history.cm?.[info.product + (info.reverse ? 'r' : '')];
     const ctHist = d?.history.ct?.[it.cardId]?.[it.lang];
     const f = condFactor(it);
+    const est = estimated && info ? cmEstimate(info.row, end) : null;
     for (let i = 0; i < n; i++) {
       if (dates[i] < from) continue;
       let u;
@@ -286,13 +310,14 @@ function valueSeries() {
         const cm = j != null ? cmHist?.[j] : null;
         const ct = j != null ? ctHist?.[j] : null;
         u = S.settings.priceSource === 'cm' ? cm ?? ct : ct ?? cm;
+        if (u == null && j == null && est?.has(dates[i])) u = est.get(dates[i]);
         u = u != null ? u * f : nowUnit;
       }
       out[i] += u * (it.qty || 1);
     }
   }
   if (n) out[n - 1] = collectionStats().value;
-  return { dates, values: out.map(v => Math.round(v * 100) / 100) };
+  return { dates, values: out.map(v => Math.round(v * 100) / 100), estimated };
 }
 
 // ---------- gráfica SVG ----------
@@ -452,6 +477,7 @@ function renderHome() {
   renderChart($('#home-chart'), labels, [{ name: '', color: '#8b6cff', values: vals }], {
     emptyMsg: S.items.length ? 'La gráfica se irá completando con un punto cada día.' : 'Aquí verás cómo evoluciona el valor de tu colección.',
   });
+  if (vs.estimated && vals.length >= 2) delta.textContent += ' · aprox.';
 
   const gainCls = st.gain > 0 ? 'up' : st.gain < 0 ? 'down' : '';
   $('#value-stats').innerHTML = `
@@ -825,6 +851,7 @@ function drawCard(el, card, st) {
     <div class="box-title">Evolución del precio</div>
     <div class="legend" id="d-legend"></div>
     <div class="chart" id="d-chart"></div>
+    <div class="note" id="d-chart-note"></div>
   </div>
 
   <div class="panel">
@@ -842,10 +869,16 @@ function drawCard(el, card, st) {
 
   // Gráfica de precios de la carta
   const h = d.history;
-  const series = [{ name: 'Cardmarket', color: SERIES_COLORS.cm, values: (info && h.cm?.[info.product + (info.reverse ? 'r' : '')]) || [] }];
-  for (const l of ['es', 'en', 'it', 'ja']) { const v = h.ct?.[card.id]?.[l]; if (v?.some(x => x != null)) series.push({ name: 'CT ' + LANG_SHORT[l], color: SERIES_COLORS[l], values: v }); }
+  const cmReal = (info && h.cm?.[info.product + (info.reverse ? 'r' : '')]) || [];
+  const realDays = cmReal.filter(v => v != null).length;
+  const est = realDays < ESTIMATE_UNTIL && info ? cmEstimate(info.row, h.dates[h.dates.length - 1] || d.prices.updated) : null;
+  const labels = [...new Set([...(est ? est.keys() : []), ...h.dates])].sort();
+  const at = (arr, date) => { const j = d.dateIdx.get(date); return j != null ? arr?.[j] ?? null : null; };
+  const series = [{ name: 'Cardmarket', color: SERIES_COLORS.cm, values: labels.map(dt => at(cmReal, dt) ?? est?.get(dt) ?? null) }];
+  for (const l of ['es', 'en', 'it', 'ja']) { const v = h.ct?.[card.id]?.[l]; if (v?.some(x => x != null)) series.push({ name: 'CT ' + LANG_SHORT[l], color: SERIES_COLORS[l], values: labels.map(dt => at(v, dt)) }); }
   el.querySelector('#d-legend').innerHTML = series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('');
-  requestAnimationFrame(() => renderChart(el.querySelector('#d-chart'), h.dates, series, { emptyMsg: 'Guardamos el precio cada día: en unos días verás aquí la evolución.' }));
+  el.querySelector('#d-chart-note').textContent = est ? 'Las últimas semanas son aproximadas (medias de Cardmarket a 30, 7 y 1 día). Cada día se guarda el precio real y la curva se irá completando.' : '';
+  requestAnimationFrame(() => renderChart(el.querySelector('#d-chart'), labels, series, { emptyMsg: 'Guardamos el precio cada día: en unos días verás aquí la evolución.' }));
 
   el.querySelectorAll('#d-lang button').forEach(b => b.onclick = () => { st.lang = b.dataset.l; drawCard(el, card, st); });
   el.querySelectorAll('#d-variant button').forEach(b => b.onclick = () => { st.variant = b.dataset.v; drawCard(el, card, st); });
