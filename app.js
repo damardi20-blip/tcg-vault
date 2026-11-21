@@ -346,9 +346,11 @@ function renderChart(el, labels, series, { height = 150, emptyMsg } = {}) {
   const y = v => h - 18 - ((v - min) / (max - min)) * (h - 30);
   const gid = 'g' + Math.random().toString(36).slice(2, 7);
   let svg = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${series[0].color}" stop-opacity=".35"/><stop offset="1" stop-color="${series[0].color}" stop-opacity="0"/></linearGradient></defs>`;
+  // Las etiquetas van como texto normal encima del SVG: dentro del SVG se estirarían y se verían borrosas.
+  let axis = '';
   for (const t of ticks) {
     svg += `<line x1="${left}" x2="${w}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}" stroke="#8a93a8" stroke-opacity=".18" stroke-dasharray="3 4"/>`;
-    svg += `<text x="${left - 6}" y="${(y(t) + 4).toFixed(1)}" fill="#8a93a8" font-size="11" text-anchor="end">${esc(axisFmt(t))}</text>`;
+    axis += `<span class="axis-y" style="right:${(((w - left + 6) / w) * 100).toFixed(2)}%;top:${(y(t) / h * 100).toFixed(2)}%">${esc(axisFmt(t))}</span>`;
   }
   series.forEach((s, si) => {
     let d = '', area = '', started = false, firstX = 0, lastX = 0;
@@ -363,8 +365,8 @@ function renderChart(el, labels, series, { height = 150, emptyMsg } = {}) {
     if (si === 0 && area) svg += `<path d="${area}L${lastX},${h - 18}L${firstX},${h - 18}Z" fill="url(#${gid})"/>`;
     svg += `<path d="${d}" stroke="${s.color}" stroke-width="${si === 0 ? 2.4 : 1.8}" fill="none" vector-effect="non-scaling-stroke"/>`;
   });
-  svg += `<text x="${left}" y="${h - 3}" fill="#8a93a8" font-size="11">${esc(fmtDate(labels[0]))}</text><text x="${w - 4}" y="${h - 3}" fill="#8a93a8" font-size="11" text-anchor="end">${esc(fmtDate(labels[n - 1]))}</text>`;
-  svg += `<line class="cursor" x1="0" x2="0" y1="0" y2="${h - 18}" stroke="#fff" stroke-opacity=".3" visibility="hidden"/></svg><div class="chart-tip hidden"></div>`;
+  axis += `<span class="axis-x" style="left:${((left / w) * 100).toFixed(2)}%">${esc(fmtDate(labels[0]))}</span><span class="axis-x end">${esc(fmtDate(labels[n - 1]))}</span>`;
+  svg += `<line class="cursor" x1="0" x2="0" y1="0" y2="${h - 18}" stroke="#fff" stroke-opacity=".3" visibility="hidden"/></svg>${axis}<div class="chart-tip hidden"></div>`;
   el.innerHTML = svg;
   const tip = el.querySelector('.chart-tip');
   const cur = el.querySelector('.cursor');
