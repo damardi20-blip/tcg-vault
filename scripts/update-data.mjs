@@ -15,7 +15,7 @@
 //   prices/<id>.json      precios del día de esa colección
 //   history/<id>.json     un precio por día (para las gráficas)
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -35,7 +35,27 @@ const EXCLUDE = new Set([
   'swshp', 'fut2020', 'svp', 'sve', 'mfb', 'mee', 'mep',
 ]);
 // Colecciones japonesas (numeración distinta a la occidental).
-const JAPANESE = [{ id: 'M6a', code: 'M6a' }];
+// `src` = id en TCGdex (si choca con una occidental, p. ej. neo1), `ct` = expansión de CardTrader de la que salen
+// imágenes, nombres en inglés y precios (las antiguas no tienen ni imágenes ni precios en TCGdex/Cardmarket),
+// `logo` = colección occidental equivalente de la que se toma el logo.
+const JAPANESE = [
+  { id: 'M6a', code: 'M6a' },
+  { id: 'jp-base1', src: 'PMCG1', code: 'BS-JP', es: 'Base Set (japonés)', ct: 1970, logo: 'base1' },
+  { id: 'jp-base2', src: 'PMCG2', code: 'JU-JP', es: 'Jungle (japonés)', ct: 1972, logo: 'base2' },
+  { id: 'jp-base3', src: 'PMCG3', code: 'FO-JP', es: 'Fossil (japonés)', ct: 1973, logo: 'base3' },
+  { id: 'jp-base4', src: 'PMCG4', code: 'TR-JP', es: 'Team Rocket (japonés)', ct: 1974, logo: 'base5' },
+  { id: 'jp-gym1', src: 'PMCG5', code: 'G1-JP', es: "Leaders' Stadium (japonés)", ct: 1975, logo: 'gym1' },
+  { id: 'jp-gym2', src: 'PMCG6', code: 'G2-JP', es: 'Challenge from the Darkness (japonés)', ct: 1976, logo: 'gym2' },
+  { id: 'jp-neo1', src: 'neo1', code: 'N1-JP', es: 'Gold, Silver, to a New World (japonés)', ct: 1977, logo: 'neo1' },
+  { id: 'jp-neo2', src: 'neo2', code: 'N2-JP', es: 'Crossing the Ruins (japonés)', ct: 1979, logo: 'neo2' },
+  { id: 'jp-neo3', src: 'neo3', code: 'N3-JP', es: 'Awakening Legends (japonés)', ct: 1981, logo: 'neo3' },
+  { id: 'jp-neo4', src: 'neo4', code: 'N4-JP', es: 'Darkness, and to Light (japonés)', ct: 1983, logo: 'neo4' },
+  { id: 'jp-vs1', src: 'VS1', code: 'VS-JP', es: 'Pokémon VS (japonés)', ct: 1984 },
+  { id: 'jp-web1', src: 'web1', code: 'WEB-JP', es: 'Pokémon Web (japonés)', ct: 1985 },
+  { id: 'jp-e1', src: 'E1', code: 'E1-JP', es: 'Base Expansion Pack (japonés)', ct: 1986, logo: 'ecard1' },
+];
+// Nombres que se prefieren a los de TCGdex.
+const NAME_ES = { base1: 'Base Set' };
 
 const TCGDEX = 'https://api.tcgdex.net/v2';
 const CM_PRICES = 'https://downloads.s3.cardmarket.com/productCatalog/priceGuide/price_guide_6.json';
@@ -81,15 +101,16 @@ function variantKey(v) {
   return k;
 }
 
-async function buildSetCards(setId, langs, detailLang) {
+async function buildSetCards(setId, langs, detailLang, srcId = setId) {
   const lists = {};
-  for (const l of langs) lists[l] = await getJSON(`${TCGDEX}/${l}/sets/${encodeURIComponent(setId)}`);
+  for (const l of langs) lists[l] = await getJSON(`${TCGDEX}/${l}/sets/${encodeURIComponent(srcId)}`);
   const base = lists[detailLang] || Object.values(lists).find(Boolean);
   if (!base) return null;
   const cards = new Map();
   for (const l of langs) {
     for (const c of lists[l]?.cards || []) {
       const card = cards.get(c.id) || { id: c.id, num: c.localId, name: {} };
+      if (srcId !== setId) card.ownId = `${setId}-${c.localId}`;   // id propio para no chocar con la occidental
       card.name[l] = c.name;
       cards.set(c.id, card);
     }
@@ -132,7 +153,9 @@ async function buildSetCards(setId, langs, detailLang) {
     if (!card.cm) card.cm = card.v.find(v => v.cm)?.cm || null;
   }
   const order = c => (/^\d+$/.test(c.num) ? parseInt(c.num, 10) : /^\D+\d+$/.test(c.num) ? 50000 + parseInt(c.num.replace(/\D/g, ''), 10) + c.num.charCodeAt(0) * 1000 : 900000 + c.num.charCodeAt(0));
-  return { info: base, imgLangs, cards: [...cards.values()].sort((a, b) => order(a) - order(b) || a.num.localeCompare(b.num)) };
+  const list = [...cards.values()].sort((a, b) => order(a) - order(b) || a.num.localeCompare(b.num));
+  for (const c of list) if (c.ownId) { c.id = c.ownId; delete c.ownId; }
+  return { info: base, imgLangs, cards: list };
 }
 
 async function listSets() {
@@ -145,7 +168,7 @@ async function listSets() {
       out.push({ id: set.id, serie: s, serieName: esSerie?.name || serie.name, count: set.cardCount?.total || 0, langs: LANGS, detailLang: 'en' });
     }
   }
-  for (const j of JAPANESE) out.push({ id: j.id, code: j.code, serie: 'ja', serieName: 'Japonés', count: 0, langs: ['ja'], detailLang: 'ja', japanese: true });
+  for (const j of JAPANESE) out.push({ ...j, serie: 'ja', serieName: 'Japonés', count: 0, langs: ['ja'], detailLang: 'ja', japanese: true });
   return out;
 }
 
@@ -189,6 +212,7 @@ async function ctExpansion(id) {
 // Expansiones de CardTrader candidatas para una colección: mismo nombre, mismo código, o las de la colección
 // "madre" (las Galerías de Entrenador, Shiny Vault… van dentro de la expansión principal en CardTrader).
 function ctExpansionsFor(setMeta, parentMeta) {
+  if (setMeta.ct) return ctExpansions.filter(e => e.id === setMeta.ct);
   const metas = [setMeta, parentMeta].filter(Boolean);
   const names = new Set(metas.flatMap(m => [m.name.en, m.name.ja]).filter(Boolean).map(normName));
   const codes = new Set(metas.map(m => normName(m.code)).filter(Boolean));
@@ -202,6 +226,24 @@ function ctExpansionsFor(setMeta, parentMeta) {
 
 // Precio más barato en NM/Mint por idioma de cada carta. Las cartas se emparejan con los "blueprints" de
 // CardTrader por el id de producto de Cardmarket (lo traen los dos) y, si no hay, por número y nombre.
+// Nombre en inglés de cada especie por nº de Pokédex, sacado del catálogo occidental (el nombre más repetido).
+let speciesCache = null;
+async function speciesNames() {
+  if (speciesCache) return speciesCache;
+  const count = new Map();
+  for (const f of await readdir(path.join(DATA, 'sets'))) {
+    if (f.startsWith('jp-') || f === 'M6a.json') continue;
+    const set = await readJSON(path.join(DATA, 'sets', f));
+    for (const c of set?.cards || []) {
+      if (c.cat !== 'Pokemon' || c.dex?.length !== 1 || !c.name?.en) continue;
+      const m = count.get(c.dex[0]) || count.set(c.dex[0], new Map()).get(c.dex[0]);
+      m.set(c.name.en, (m.get(c.name.en) || 0) + 1);
+    }
+  }
+  speciesCache = new Map([...count].map(([d, m]) => [d, [...m].sort((a, b) => b[1] - a[1])[0][0]]));
+  return speciesCache;
+}
+
 async function cardTraderForSet(setMeta, cards, parentMeta) {
   if (!ctExpansions) ctExpansions = ((await ctFetch('/expansions')) || []).filter(e => e.game_id === 5);
   const exps = ctExpansionsFor(setMeta, parentMeta);
@@ -216,7 +258,7 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
   const numKey = n => String(n ?? '').split('/')[0].replace(/^0+(?=\w)/, '').toUpperCase();
   const fallbackKey = (num, name) => (setMeta.japanese ? numKey(num) : `${numKey(num)}|${normName(name)}`);
   const out = {};
-  let imgAdded = 0;
+  let imgAdded = 0, changed = 0;
   for (const exp of exps) {
     const { bps, market } = await ctExpansion(exp.id);
     const bpCard = new Map();
@@ -226,6 +268,42 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
       for (const cm of bp.card_market_ids || []) if (!id) id = byCm.get(cm);
       if (id) { bpCard.set(bp.id, id); matched.add(id); }
     }
+    // Japonesas antiguas: CardTrader no tiene número de carta y el orden no siempre coincide.
+    // Pokémon: por nombre de especie (nº de Pokédex de TCGdex → nombre en inglés del catálogo occidental).
+    // Energías: por tipo. Entrenadores: en orden.
+    if (setMeta.ct) {
+      const species = await speciesNames();
+      const singles = bps.filter(b => b.category_id === 73).sort((a, b) => a.id - b.id);
+      const free = new Set(cards.map(c => c.id));
+      const take = (bp, card) => {
+        free.delete(card.id); bpCard.set(bp.id, card.id);
+        if (card.name.en !== bp.name) { card.name.en = bp.name; changed++; }
+      };
+      const words = x => ` ${normName(x)} `;
+      const ENERGY = [['grass', '草'], ['fire', '炎'], ['water', '水'], ['light', '雷'], ['psychic', '超'], ['fighting', '闘'], ['dark', '悪'], ['metal', '鋼'], ['colorless', '無色']];
+      const energyOf = (txt, jp) => ENERGY.find(([en, ja]) => (jp ? txt.includes(ja) : normName(txt).includes(en)))?.[0];
+      const pending = [];
+      const isEnergyBp = bp => /(^| )energy$/.test(normName(bp.name).replace(/ (holo|rare|jp)$/g, ''));   // "Fire Energy", no "Energy Removal"
+      for (const bp of singles) {
+        const nm = words(bp.name);
+        if (isEnergyBp(bp)) {
+          const dbl = / double /.test(nm);
+          const type = energyOf(bp.name, false);
+          const card = cards.find(c => free.has(c.id) && c.cat === 'Energy' && /ダブル/.test(c.name.ja || '') === dbl && energyOf(c.name.ja || '', true) === type);
+          if (card) { take(bp, card); continue; }
+        }
+        const card = cards.find(c => free.has(c.id) && c.cat === 'Pokemon' && (c.dex || []).some(d => species.has(d) && nm.includes(words(species.get(d)))));
+        if (card) take(bp, card); else pending.push(bp);
+      }
+      // Lo que queda, en orden: energías especiales con energías, y el resto (entrenadores) con el resto.
+      for (const energy of [true, false]) {
+        const rest = cards.filter(c => free.has(c.id) && (c.cat === 'Energy') === energy);
+        pending.filter(bp => isEnergyBp(bp) === energy).forEach((bp, i) => { if (rest[i]) take(bp, rest[i]); });
+      }
+      const left = cards.filter(c => free.has(c.id));
+      pending.filter(bp => !bpCard.has(bp.id)).forEach((bp, i) => { if (left[i]) take(bp, left[i]); });
+      if (free.size) console.warn(`  ! CardTrader ${setMeta.id}: ${free.size} cartas sin pareja`);
+    }
     const rest = new Map(cards.filter(c => !matched.has(c.id)).map(c => [fallbackKey(c.num, c.name.en || c.name.ja), c.id]));
     if (rest.size) for (const bp of bps) {
       if (bpCard.has(bp.id) || !bp.fixed_properties?.collector_number) continue;
@@ -233,11 +311,13 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
       if (id) bpCard.set(bp.id, id);
     }
     // Imagen de CardTrader para las cartas que no tienen en ningún otro sitio.
-    const need = new Set(cards.filter(c => !c.im && (c.noimg || !setMeta.imgLangs?.length)).map(c => c.id));
+    const need = new Set(cards.filter(c => setMeta.ct || (!c.im && (c.noimg || !setMeta.imgLangs?.length))).map(c => c.id));
     if (need.size) for (const bp of bps) {
       const id = bpCard.get(bp.id);
       if (!need.has(id) || !bp.image?.url) continue;
       const card = cards.find(c => c.id === id);
+      const url = `https://www.cardtrader.com${bp.image.url}`;
+      if (card.im?.[1] === url) { need.delete(id); continue; }
       card.im = [`https://www.cardtrader.com${bp.image.show?.url || bp.image.url}`, `https://www.cardtrader.com${bp.image.url}`];
       need.delete(id);
       imgAdded++;
@@ -262,7 +342,7 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
       }
     }
   }
-  return Object.keys(out).length || imgAdded ? { prices: Object.keys(out).length ? out : null, imgAdded } : null;
+  return Object.keys(out).length || imgAdded || changed ? { prices: Object.keys(out).length ? out : null, imgAdded, changed } : null;
 }
 
 // ---------- logos e imágenes que faltan en TCGdex ----------
@@ -295,8 +375,9 @@ async function fillLogos(index) {
   if (!missing.length) return;
   for (const m of missing) {
     for (const l of ['en', 'es', 'fr', 'de', 'it', 'pt']) {
+      if (m.japanese) break;
       const x = await getJSON(`${TCGDEX}/${l}/sets/${encodeURIComponent(m.id)}`, {}, 1).catch(() => null);
-      if (x?.logo) { m.logo = x.logo; break; }
+      if (x?.logo && (await fetch(`${x.logo}.webp`, { method: 'HEAD' }).catch(() => null))?.ok) { m.logo = x.logo; break; }
     }
     if (!m.logo) m.logo = (await ptcgSetFor(m))?.images?.logo || null;
   }
@@ -344,7 +425,7 @@ async function fillImages(m, cards) {
 const LIMITLESS = 'https://limitlesstcg.nyc3.cdn.digitaloceanspaces.com/tpc';
 const LIMITLESS_ENERGY = { DAR: 'D', FIG: 'F', FIR: 'R', GRA: 'G', LIG: 'L', MET: 'M', PSY: 'P', WAT: 'W' };
 async function fillImagesJapanese(m, cards) {
-  if (!m.japanese || m.imgLangs?.length) return 0;
+  if (!m.japanese || m.imgLangs?.length || m.ct) return 0;   // las antiguas (con `ct`) salen de CardTrader
   let n = 0;
   await pool(cards.filter(c => !c.im), 8, async card => {
     const code = /^\d+$/.test(card.num) ? String(parseInt(card.num, 10)) : LIMITLESS_ENERGY[card.num];
@@ -408,7 +489,7 @@ async function main() {
     let meta;
     if (stale) {
       process.stdout.write(`· ${s.id}: descargando cartas… `);
-      const built = await buildSetCards(s.id, s.langs, s.detailLang);
+      const built = await buildSetCards(s.id, s.langs, s.detailLang, s.src || s.id);
       if (!built) { console.log('no disponible'); continue; }
       const info = built.info;
       // Si TCGdex falló con alguna carta (503…), se conserva lo que teníamos de ella.
@@ -418,17 +499,18 @@ async function main() {
       }
       const names = {};
       for (const l of s.langs) {
-        const x = l === s.detailLang ? info : await getJSON(`${TCGDEX}/${l}/sets/${encodeURIComponent(s.id)}`).catch(() => null);
+        const x = l === s.detailLang ? info : await getJSON(`${TCGDEX}/${l}/sets/${encodeURIComponent(s.src || s.id)}`).catch(() => null);
         if (x?.name) names[l] = x.name;
       }
       if (!names.es && !s.japanese) names.es = names.en;
+      if (s.es) names.es = s.es;
       meta = {
         id: s.id, code: s.code || info.abbreviation?.official || s.id.toUpperCase(),
         name: names, langs: s.langs, imgLangs: built.imgLangs,
         serie: s.serie, serieName: s.serieName,
         total: info.cardCount?.total || built.cards.length, official: info.cardCount?.official || null,
         release: info.releaseDate || null, logo: info.logo || null, symbol: info.symbol || null,
-        japanese: !!s.japanese,
+        japanese: !!s.japanese, ...(s.ct ? { ct: s.ct } : {}), ...(s.logo ? { logoFrom: s.logo } : {}),
       };
       cached = { set: meta, cards: built.cards };
       await writeJSON(file, cached);
@@ -441,14 +523,6 @@ async function main() {
     if (!meta.imgLangs?.length && !cached.cards.every(x => x.im)) {
       const n = meta.japanese ? await fillImagesJapanese(meta, cached.cards) : await fillImages(meta, cached.cards);
       if (n) { await writeJSON(file, cached); console.log(`· ${s.id}: ${n} imágenes de ${meta.japanese ? 'Limitless / pokemon-card.com' : 'pokemontcg.io'}`); }
-    }
-    for (const c of cached.cards) {
-      const row = [c.id, s.id, c.num, c.name.en || c.name.ja || c.name.es || ''];
-      const es = c.name.es && c.name.es !== row[3] ? c.name.es : 0;
-      const it = c.name.it && c.name.it !== row[3] ? c.name.it : 0;
-      if (es || it) row.push(es);
-      if (it) row.push(it);
-      search.push(row);
     }
 
     // Precios del día de esta colección
@@ -465,11 +539,20 @@ async function main() {
         const parent = pid !== s.id ? (await readJSON(path.join(DATA, 'sets', `${pid}.json`)))?.set : null;
         const ct = await cardTraderForSet(meta, cached.cards, parent);
         if (ct?.prices) { prices.ct = ct.prices; ctOk = true; }
-        if (ct?.imgAdded) { await writeJSON(file, cached); console.log(`· ${s.id}: ${ct.imgAdded} imágenes de CardTrader`); }
+        if (ct?.imgAdded || ct?.changed) { await writeJSON(file, cached); if (ct.imgAdded) console.log(`· ${s.id}: ${ct.imgAdded} imágenes de CardTrader`); }
       } catch (e) { console.warn(`  ! CardTrader ${s.id}: ${e.message}`); }
     }
     await writeJSON(path.join(DATA, 'prices', `${s.id}.json`), prices);
 
+    // Índice de búsqueda (después de CardTrader, que pone el nombre en inglés a las japonesas antiguas)
+    for (const c of cached.cards) {
+      const row = [c.id, s.id, c.num, c.name.en || c.name.ja || c.name.es || ''];
+      const es = c.name.es && c.name.es !== row[3] ? c.name.es : 0;
+      const it = c.name.it && c.name.it !== row[3] ? c.name.it : 0;
+      if (es || it) row.push(es);
+      if (it) row.push(it);
+      search.push(row);
+    }
     // Histórico: tendencia de Cardmarket por producto (+ reverse) y CardTrader por idioma
     const hfile = path.join(DATA, 'history', `${s.id}.json`);
     const hist = await readJSON(hfile, { dates: [], cm: {}, ct: {} });
@@ -507,6 +590,19 @@ async function main() {
     index.sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9));
   }
 
+  for (const m of index) if (NAME_ES[m.id] && m.name.es !== NAME_ES[m.id]) {
+    m.name.es = NAME_ES[m.id];
+    const file = path.join(DATA, 'sets', `${m.id}.json`);
+    const c = await readJSON(file);
+    if (c) { c.set.name.es = NAME_ES[m.id]; await writeJSON(file, c); }
+  }
+  // Logos de TCGdex que dan 404 (p. ej. Undaunted): se descartan para buscar otro.
+  await pool(index.filter(m => m.logo?.startsWith('https://assets.tcgdex.net/')), 10, async m => {
+    const r = await fetch(`${m.logo}.webp`, { method: 'HEAD' }).catch(() => null);
+    if (r?.status === 404) m.logo = null;
+  });
+  // Japonesas antiguas: el logo de su equivalente occidental.
+  for (const m of index) if (!m.logo && m.logoFrom) m.logo = index.find(x => x.id === m.logoFrom)?.logo || null;
   const noLogo = index.filter(m => !m.logo);
   await fillLogos(index);
   for (const m of noLogo) if (m.logo) {   // se guarda en el archivo de la colección para no buscarlo cada día
