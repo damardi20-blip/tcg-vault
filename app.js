@@ -556,6 +556,9 @@ function renderItems() {
   el.innerHTML = html + '</div>';
 }
 
+// Los logos de TCGdex vienen sin extensión; los de otras fuentes ya son la dirección completa.
+const setLogo = set => !set.logo ? null : set.logo.startsWith('https://assets.tcgdex.net/') ? `${set.logo}.webp` : set.logo;
+
 // ---------- vista: catálogo ----------
 function ownedQtyMap() {
   const m = new Map();
@@ -585,7 +588,7 @@ function renderCatalog() {
       html += `<div class="era-title">${esc(lastSerie)} <span class="muted">${years.length ? esc(years[0] === years[years.length - 1] ? years[0] : `${years[0]}–${years[years.length - 1]}`) : ''}</span></div>`;
     }
     const have = owned.get(set.id)?.size || 0;
-    const logo = set.logo ? `${set.logo}.webp` : null;
+    const logo = setLogo(set);
     html += `<button class="set-row" data-open-set="${esc(set.id)}">
       <div class="set-logo">${logo ? `<img src="${esc(logo)}" alt="" loading="lazy" onerror="this.remove()">` : `<span>${esc(set.code)}</span>`}</div>
       <div class="info"><div class="nm">${esc(setName(set))}</div>
@@ -635,7 +638,7 @@ async function renderCatalogSet() {
   let cards = d.cards;
   const have = cards.filter(c => owned.has(c.id)).length;
   const value = cards.reduce((a, c) => a + (marketPrice(c, lang).value || 0), 0);
-  const logo = set.logo ? `${set.logo}.webp` : null;
+  const logo = setLogo(set);
   $('#catalog-set-head').innerHTML = `
     ${logo ? `<img class="set-head-logo" src="${esc(logo)}" alt="" onerror="this.remove()">` : ''}
     <div class="set-info">${esc(set.serieName)} · ${esc(fmtDate(set.release))} · ${set.total} cartas${set.official && set.official < set.total ? ` (${set.official} + ${set.total - set.official} secretas)` : ''}</div>

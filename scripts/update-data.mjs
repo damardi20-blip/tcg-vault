@@ -210,6 +210,36 @@ async function cardTraderForSet(setMeta, cards) {
   return out;
 }
 
+// ---------- logos que faltan en TCGdex ----------
+// Se buscan en otros idiomas de TCGdex y, si no, en pokemontcg.io (misma fecha de salida y nombre parecido).
+const PTCG_SETS = 'https://api.pokemontcg.io/v2/sets?pageSize=250&select=id,name,releaseDate,images';
+const LOGO_FROM = { rc: 'bw11', exu: 'ex10', M6a: 'me55' };   // subcolecciones sin logo propio
+async function fillLogos(index) {
+  const missing = index.filter(m => !m.logo);
+  if (!missing.length) return;
+  for (const m of missing) {
+    for (const l of ['en', 'es', 'fr', 'de', 'it', 'pt']) {
+      const x = await getJSON(`${TCGDEX}/${l}/sets/${encodeURIComponent(m.id)}`, {}, 1).catch(() => null);
+      if (x?.logo) { m.logo = x.logo; break; }
+    }
+  }
+  const rest = missing.filter(m => !m.logo);
+  if (!rest.length) return;
+  const ptcg = (await getJSON(PTCG_SETS).catch(() => null))?.data || [];
+  const words = s => new Set(normName(s).split(' ').filter(Boolean));
+  for (const m of rest) {
+    let hit = LOGO_FROM[m.id] && ptcg.find(p => p.id === LOGO_FROM[m.id]);
+    if (!hit && m.release) {
+      const sameDay = ptcg.filter(p => p.releaseDate.replace(/\//g, '-') === m.release);
+      const mine = words(m.name.en || m.name.es || '');
+      const score = p => { const w = words(p.name); let n = 0; for (const x of mine) if (w.has(x)) n++; return n / Math.max(w.size, mine.size, 1); };
+      hit = sameDay.sort((a, b) => score(b) - score(a))[0];
+    }
+    if (hit?.images?.logo) m.logo = hit.images.logo;
+  }
+  console.log(`· logos: ${missing.filter(m => m.logo).length} de ${missing.length} encontrados fuera de TCGdex en inglés`);
+}
+
 // ---------- main ----------
 async function main() {
   for (const d of ['sets', 'prices', 'history']) await mkdir(path.join(DATA, d), { recursive: true });
@@ -320,6 +350,13 @@ async function main() {
     index.sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9));
   }
 
+  const noLogo = index.filter(m => !m.logo);
+  await fillLogos(index);
+  for (const m of noLogo) if (m.logo) {   // se guarda en el archivo de la colección para no buscarlo cada día
+    const file = path.join(DATA, 'sets', `${m.id}.json`);
+    const c = await readJSON(file);
+    if (c) { c.set.logo = m.logo; await writeJSON(file, c); }
+  }
   await writeJSON(path.join(DATA, 'index.json'), { updated: today, cmCreated: cm.created, ct: ctOk || (!CT_TOKEN ? false : oldIndex.ct), sets: index });
   await writeJSON(path.join(DATA, 'search.json'), search);
   if (!CT_TOKEN) console.log('· Sin CARDTRADER_TOKEN: se omiten los precios por idioma de CardTrader.');
