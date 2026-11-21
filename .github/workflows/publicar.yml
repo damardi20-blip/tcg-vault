@@ -1,0 +1,86 @@
+name: Actualizar precios y publicar la app
+
+# - Cada día descarga cartas y precios nuevos.
+# - Cada vez que cambias la app (push a main) la vuelve a publicar.
+# Los datos viven en la rama "datos", que se reescribe cada día con un único commit
+# para que el repositorio no crezca sin parar.
+#
+# Requisito (una sola vez): Settings → Pages → Source: "GitHub Actions".
+
+on:
+  schedule:
+    - cron: '30 6 * * *'     # todos los días a las 07:30 (hora de Madrid en invierno)
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: 'Volver a descargar todas las cartas (no solo precios)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: publicar
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Recuperar los datos de ayer
+        run: |
+          if git ls-remote --exit-code --heads origin datos > /dev/null; then
+            git fetch --depth 1 origin datos
+            mkdir -p data
+            git --work-tree=data checkout origin/datos -- .
+            git reset -q
+            echo "HAY_DATOS=1" >> $GITHUB_ENV
+          fi
+
+      - name: Descargar cartas y precios
+        if: github.event_name != 'push' || env.HAY_DATOS != '1'
+        run: node scripts/update-data.mjs
+        env:
+          DATA_DIR: data
+          CARDTRADER_TOKEN: ${{ secrets.CARDTRADER_TOKEN }}
+          FORCE_REBUILD: ${{ inputs.rebuild && '1' || '0' }}
+
+      - name: Guardar los datos en la rama "datos"
+        if: github.event_name != 'push' || env.HAY_DATOS != '1'
+        run: |
+          cd data
+          git init -q -b datos
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Datos del $(date -u +%F)"
+          git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" datos
+          rm -rf .git
+
+      - name: Preparar la web
+        run: |
+          mkdir -p _site
+          cp -r index.html style.css app.js scanner.js firebase-config.js manifest.json sw.js icons data _site/
+          touch _site/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

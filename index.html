@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>TCG Vault</title>
+  <meta name="description" content="Tu colección de cartas Pokémon con precios actualizados.">
+  <meta name="theme-color" content="#0b0d12">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TCG Vault">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img src="icons/icon-192.png" alt=""><span>TCG Vault</span></div>
+    <button id="sync-chip" class="chip hidden" type="button"></button>
+  </header>
+
+  <main>
+    <!-- Colección -->
+    <section id="view-home" class="view active" aria-label="Mi colección">
+      <div class="value-card">
+        <div class="value-label">Valor de la colección</div>
+        <div id="value-total" class="value-big">0,00 €</div>
+        <div id="value-delta" class="value-delta"></div>
+        <div id="home-chart" class="chart"></div>
+        <div id="home-range" class="seg small">
+          <button data-range="7">7D</button><button data-range="30" class="on">1M</button><button data-range="90">3M</button><button data-range="365">1A</button><button data-range="0">Todo</button>
+        </div>
+        <div id="value-stats" class="stats"></div>
+      </div>
+
+      <div id="home-progress"></div>
+      <div id="home-top"></div>
+
+      <div class="section-head"><h2>Mis cartas</h2><span id="items-count" class="muted"></span></div>
+      <div class="toolbar">
+        <input id="items-search" type="search" placeholder="Buscar por nombre o código (ej. 044, 30C 044)" autocomplete="off">
+      </div>
+      <div class="toolbar row">
+        <select id="items-sort" aria-label="Ordenar">
+          <option value="set">Colección y nº</option>
+          <option value="value-desc">Valor (mayor)</option>
+          <option value="value-asc">Valor (menor)</option>
+          <option value="gain-desc">Ganancia</option>
+          <option value="name">Nombre</option>
+          <option value="recent">Añadidas recientemente</option>
+        </select>
+        <select id="items-filter-set" aria-label="Colección"></select>
+        <select id="items-filter-lang" aria-label="Idioma">
+          <option value="">Idiomas</option><option value="es">ES</option><option value="en">EN</option><option value="it">IT</option><option value="ja">JA</option>
+        </select>
+        <button id="items-layout" class="icon-btn" type="button" aria-label="Cambiar vista"></button>
+      </div>
+      <div id="items-list"></div>
+    </section>
+
+    <!-- Catálogo -->
+    <section id="view-catalog" class="view" aria-label="Catálogo">
+      <div class="section-head"><h2 id="catalog-title">Colecciones</h2><span id="catalog-count" class="muted"></span></div>
+      <div class="toolbar">
+        <input id="catalog-search" type="search" placeholder="Buscar en todas las colecciones" autocomplete="off">
+      </div>
+      <div id="catalog-browse"></div>
+      <div id="catalog-set" class="hidden">
+        <button id="catalog-back" class="link-btn" type="button"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>Todas las colecciones</button>
+        <div id="catalog-set-head" class="set-head"></div>
+        <div class="toolbar row">
+          <div id="catalog-lang" class="seg small"></div>
+          <select id="catalog-filter" aria-label="Filtro">
+            <option value="">Todas</option><option value="have">Las tengo</option><option value="missing">Me faltan</option><option value="wish">En deseos</option>
+          </select>
+          <select id="catalog-sort" aria-label="Ordenar">
+            <option value="num">Número</option><option value="price-desc">Precio (mayor)</option><option value="price-asc">Precio (menor)</option>
+          </select>
+        </div>
+        <div id="catalog-grid" class="grid"></div>
+      </div>
+    </section>
+
+    <!-- Deseos -->
+    <section id="view-wish" class="view" aria-label="Lista de deseos">
+      <div class="section-head"><h2>Lista de deseos</h2><span id="wish-count" class="muted"></span></div>
+      <div id="wish-summary" class="panel"></div>
+      <div id="wish-grid" class="grid"></div>
+    </section>
+
+    <!-- Ajustes -->
+    <section id="view-settings" class="view" aria-label="Ajustes">
+      <div class="section-head"><h2>Ajustes</h2></div>
+      <div id="settings-body"></div>
+    </section>
+  </main>
+
+  <nav class="tabbar" aria-label="Secciones">
+    <button data-view="home" class="on"><svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M8 13h8M8 17h5"/></svg><span>Colección</span></button>
+    <button data-view="catalog"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="9" rx="1.5"/><rect x="3" y="15" width="7" height="6" rx="1.5"/><rect x="14" y="15" width="7" height="6" rx="1.5"/></svg><span>Catálogo</span></button>
+    <button id="scan-btn" class="scan" aria-label="Escanear carta"><svg viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3.2"/></svg></button>
+    <button data-view="wish"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg><span>Deseos</span></button>
+    <button data-view="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Ajustes</span></button>
+  </nav>
+
+  <!-- Hoja inferior reutilizable (ficha de carta, formularios...) -->
+  <div id="sheet" class="sheet hidden" aria-modal="true" role="dialog">
+    <div class="sheet-backdrop"></div>
+    <div class="sheet-panel">
+      <div class="sheet-bar">
+        <button id="sheet-back" class="icon-btn hidden" type="button" aria-label="Atrás"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <div class="sheet-grip"></div>
+        <button id="sheet-close" class="icon-btn" type="button" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <div id="sheet-content" class="sheet-content"></div>
+    </div>
+  </div>
+
+  <!-- Escáner -->
+  <div id="scanner" class="scanner hidden">
+    <video id="scanner-video" playsinline muted autoplay></video>
+    <div class="scanner-mask"><div id="scanner-frame" class="scanner-frame"></div></div>
+    <div id="scanner-status" class="scanner-status">Encuadra la carta dentro del marco</div>
+    <div class="scanner-actions">
+      <button id="scanner-photo" class="btn ghost" type="button">Foto</button>
+      <button id="scanner-shot" class="shutter" type="button" aria-label="Capturar"></button>
+      <button id="scanner-close" class="btn ghost" type="button">Cerrar</button>
+    </div>
+    <input id="scanner-file" type="file" accept="image/*" capture="environment" hidden>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="firebase-config.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

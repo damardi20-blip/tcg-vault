@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+# Los datos de cartas y precios se generan cada día en GitHub (rama "datos")
+data/
+.claude/

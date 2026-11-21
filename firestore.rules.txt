@@ -1,0 +1,15 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /vaults/{code} {
+      allow read, write: if code.matches('TCG-[A-Z0-9]{6}');
+      match /{document=**} {
+        allow read, write: if code.matches('TCG-[A-Z0-9]{6}');
+      }
+    }
+  }
+}
+
+// Nota: la app no usa cuentas de usuario. Quien conozca el código exacto de una
+// colección (ej. "TCG-AB12CD") puede verla y modificarla. Trátalo como una contraseña.
+// Cada amigo que use la app crea su propio código y tiene su colección separada.
