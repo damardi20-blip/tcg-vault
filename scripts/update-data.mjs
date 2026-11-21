@@ -298,6 +298,34 @@ async function fillImagesJapanese(m, cards) {
     const ok = await fetch(url('SM'), { method: 'HEAD' }).then(r => r.ok).catch(() => false);
     if (ok) { card.im = [url('SM'), url('LG')]; n++; }
   });
+  if (cards.some(c => !c.im)) n += await fillImagesOfficialJP(m, cards);
+  return n;
+}
+
+// Las que falten, de la web oficial japonesa (pokemon-card.com). Su lista no trae el número de carta,
+// pero va en orden: se empareja por nombre y, si hay varias con el mismo nombre, en orden de número.
+const PCC = 'https://www.pokemon-card.com';
+async function fillImagesOfficialJP(m, cards) {
+  const list = [];
+  for (let page = 1, max = 1; page <= max && page <= 20; page++) {
+    const d = await getJSON(`${PCC}/card-search/resultAPI.php?keyword=&se_ta=&regulation_sidebar_form=all&pg=${encodeURIComponent(m.id)}&illust=&sm_and_keyword=true&page=${page}`,
+      { 'User-Agent': 'Mozilla/5.0' }).catch(e => { console.warn('  ! ' + e.message); return null; });
+    if (!d?.cardList) break;
+    max = d.maxPage || 1;
+    list.push(...d.cardList);
+  }
+  const key = s => String(s || '').replace(/&amp;/g, '&').replace(/＆/g, '&').replace(/[\s　]/g, '');
+  const groups = new Map();
+  for (const c of list) { const k = key(c.cardNameAltText); (groups.get(k) || groups.set(k, []).get(k)).push(c); }
+  const seen = new Map();
+  let n = 0;
+  for (const card of cards) {   // las cartas ya vienen ordenadas por número
+    const k = key(card.name.ja);
+    const i = seen.get(k) || 0;
+    seen.set(k, i + 1);
+    const hit = (groups.get(k) || [])[i];
+    if (!card.im && hit?.cardThumbFile) { const u = PCC + hit.cardThumbFile; card.im = [u, u]; n++; }
+  }
   return n;
 }
 
@@ -417,7 +445,7 @@ async function main() {
     const c = await readJSON(file);
     if (!c || c.cards.every(x => x.im)) continue;
     const n = m.japanese ? await fillImagesJapanese(m, c.cards) : await fillImages(m, c.cards);
-    if (n) { await writeJSON(file, c); console.log(`· ${m.id}: ${n} imágenes de ${m.japanese ? 'Limitless' : 'pokemontcg.io'}`); }
+    if (n) { await writeJSON(file, c); console.log(`· ${m.id}: ${n} imágenes de ${m.japanese ? 'Limitless / pokemon-card.com' : 'pokemontcg.io'}`); }
   }
   const noLogo = index.filter(m => !m.logo);
   await fillLogos(index);
