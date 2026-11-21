@@ -465,6 +465,73 @@ async function fillImagesOfficialJP(m, cards) {
   return n;
 }
 
+// ---------- huellas visuales para el escáner ----------
+// Para cada carta: la ilustración reducida a 8×6 píxeles en color, normalizada (así da igual la luz de la foto).
+// El escáner compara la foto con todas para encontrar la carta aunque no consiga leer el texto.
+// Se guardan en data/sigs.bin en el mismo orden que search.json (144 bytes por carta).
+const SIG_W = 8, SIG_H = 6, SIG_LEN = SIG_W * SIG_H * 3;
+const IMG_BASE = 'https://assets.tcgdex.net';
+function cardImageUrl(meta, card) {
+  if (card.im) return card.im[0];
+  if (!meta.imgLangs?.length || card.noimg) return null;
+  const l = meta.imgLangs.includes('en') ? 'en' : meta.imgLangs[0];
+  return `${IMG_BASE}/${l}/${meta.serie}/${meta.id}/${encodeURIComponent(card.num)}/low.webp`;
+}
+async function loadSharp() {
+  try { return (await import(process.env.SHARP_PATH || 'sharp')).default; } catch { return null; }
+}
+async function sigOf(sharp, url) {
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  if (!res.ok) return null;
+  const img = sharp(Buffer.from(await res.arrayBuffer()));
+  const { width: w, height: h } = await img.metadata();
+  if (!w || !h) return null;
+  const raw = await img.extract({ left: Math.round(w * 0.09), top: Math.round(h * 0.11), width: Math.round(w * 0.82), height: Math.round(h * 0.40) })
+    .removeAlpha().resize(SIG_W, SIG_H, { fit: 'fill', kernel: 'cubic' }).raw().toBuffer();
+  const n = SIG_W * SIG_H, out = Buffer.alloc(SIG_LEN);
+  for (let ch = 0; ch < 3; ch++) {
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += raw[i * 3 + ch];
+    mean /= n;
+    let sd = 0;
+    for (let i = 0; i < n; i++) sd += (raw[i * 3 + ch] - mean) ** 2;
+    sd = Math.sqrt(sd / n) || 1;
+    for (let i = 0; i < n; i++) out.writeInt8(Math.max(-127, Math.min(127, Math.round(((raw[i * 3 + ch] - mean) / sd) * 40))), ch * n + i);
+  }
+  return out;
+}
+async function buildSignatures(index, search) {
+  const sharp = await loadSharp();
+  if (!sharp) { console.log('· Sin la librería sharp: no se calculan las huellas del escáner.'); return; }
+  const cacheFile = path.join(DATA, 'sigcache.json');
+  const cache = await readJSON(cacheFile, {});
+  const metas = new Map(index.map(m => [m.id, m]));
+  const cardsBySet = new Map();
+  const todo = [];
+  for (const row of search) {
+    const [id, setId] = row;
+    if (!cardsBySet.has(setId)) {
+      const c = await readJSON(path.join(DATA, 'sets', `${setId}.json`));
+      cardsBySet.set(setId, new Map((c?.cards || []).map(x => [x.id, x])));
+    }
+    const card = cardsBySet.get(setId).get(id);
+    const url = card && cardImageUrl(metas.get(setId), card);
+    if (url && cache[id]?.[0] !== url) todo.push([id, url]);
+  }
+  let done = 0, fail = 0;
+  await pool(todo, 16, async ([id, url]) => {
+    const sig = await sigOf(sharp, url).catch(() => null);
+    if (sig) { cache[id] = [url, sig.toString('base64')]; done++; } else fail++;
+    if ((done + fail) % 2000 === 0) console.log(`  huellas: ${done + fail}/${todo.length}`);
+  });
+  await writeJSON(cacheFile, cache);
+  const bin = Buffer.alloc(search.length * SIG_LEN);
+  let have = 0;
+  search.forEach((row, i) => { const c = cache[row[0]]; if (c) { Buffer.from(c[1], 'base64').copy(bin, i * SIG_LEN); have++; } });
+  await writeFile(path.join(DATA, 'sigs.bin'), bin);
+  console.log(`· Huellas del escáner: ${have}/${search.length} cartas (${done} nuevas, ${fail} sin imagen).`);
+}
+
 // ---------- main ----------
 async function main() {
   for (const d of ['sets', 'prices', 'history']) await mkdir(path.join(DATA, d), { recursive: true });
@@ -612,6 +679,7 @@ async function main() {
   }
   await writeJSON(path.join(DATA, 'index.json'), { updated: today, cmCreated: cm.created, ct: ctOk || (!CT_TOKEN ? false : oldIndex.ct), sets: index });
   await writeJSON(path.join(DATA, 'search.json'), search);
+  await buildSignatures(index, search);
   if (!CT_TOKEN) console.log('· Sin CARDTRADER_TOKEN: se omiten los precios por idioma de CardTrader.');
   console.log(`✓ ${index.length} colecciones, ${search.length} cartas.`);
 }

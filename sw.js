@@ -1,5 +1,5 @@
 // Service worker: permite abrir la app sin conexión y guarda las imágenes de cartas ya vistas.
-const VERSION = 'v10';
+const VERSION = 'v11';
 const SHELL = `tcgvault-shell-${VERSION}`;
 const DATA = 'tcgvault-data';
 const IMAGES = 'tcgvault-images';

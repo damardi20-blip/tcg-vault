@@ -1,4 +1,4 @@
-// TCG Vault — colección de cartas Pokémon con precios actualizados.
+// DLRS Vault — colección de cartas Pokémon con precios actualizados.
 // Todo funciona en el propio navegador. Los datos de cartas y precios están en /data
 // (los actualiza GitHub Actions cada día) y tus cartas se guardan en el móvil
 // y, si activas la sincronización, en Firebase.
@@ -134,7 +134,7 @@ async function ensureLite() {
   S.lite = rows.map(([id, set, num, en, es, it]) => {
     const name = {};
     const meta = S.sets.get(set);
-    if (meta?.japanese) name.ja = en; else name.en = en;
+    if (meta?.japanese && /[^\x00-\x7F]/.test(en)) name.ja = en; else name.en = en;   // las japonesas antiguas traen el nombre en inglés
     if (es) name.es = es;
     if (it) name.it = it;
     return { id, set, num, name, lite: true };
@@ -760,7 +760,7 @@ function renderSettings() {
   </div></div>
 
   <div class="settings-group"><h3>Acerca de</h3><div class="settings-card">
-    <div class="settings-row"><div class="txt">TCG Vault<small>${nCards.toLocaleString('es-ES')} cartas en ${S.index.sets.length} colecciones, de Base Set (1999) a hoy. Datos de cartas e imágenes: TCGdex. Precios: guía de precios pública de Cardmarket${ctOn ? ' y CardTrader' : ''}. App personal sin ánimo de lucro.</small></div></div>
+    <div class="settings-row"><div class="txt">DLRS Vault<small>${nCards.toLocaleString('es-ES')} cartas en ${S.index.sets.length} colecciones, de Base Set (1999) a hoy. Datos de cartas e imágenes: TCGdex. Precios: guía de precios pública de Cardmarket${ctOn ? ' y CardTrader' : ''}. App personal sin ánimo de lucro.</small></div></div>
   </div></div>
   <input type="file" id="import-file" accept="application/json,.json" hidden>`;
   $('#set-source').value = S.settings.priceSource;
@@ -800,6 +800,20 @@ async function openCard(cardId, lang, opts = {}) {
   if (!card) return;
   const st = { lang: lang && setOf(card).langs.includes(lang) ? lang : defaultLang(card), variant: defaultVariant(card) };
   openSheet(el => drawCard(el, card, st), opts);
+}
+
+// Carta a pantalla completa (se cierra tocando en cualquier sitio). Se puede ampliar con dos dedos.
+function openZoom(card, lang) {
+  const src = cardImg(card, lang, 'high');
+  if (!src) return;
+  const fb = cardImgFallback(card, lang, 'high');
+  const z = document.createElement('div');
+  z.className = 'zoom';
+  z.innerHTML = `<img src="${esc(src)}" alt="${esc(cardName(card, lang))}" ${fb ? `onerror="if('${esc(fb)}'!==this.src)this.src='${esc(fb)}'"` : ''}><button class="icon-btn zoom-close" type="button" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>`;
+  const close = () => { z.classList.remove('on'); setTimeout(() => z.remove(), 200); };
+  z.onclick = close;
+  document.body.appendChild(z);
+  requestAnimationFrame(() => z.classList.add('on'));
 }
 
 function drawCard(el, card, st) {
@@ -892,6 +906,7 @@ function drawCard(el, card, st) {
   requestAnimationFrame(() => renderChart(el.querySelector('#d-chart'), labels, series, { emptyMsg: 'Guardamos el precio cada día: en unos días verás aquí la evolución.' }));
 
   el.querySelectorAll('#d-lang button').forEach(b => b.onclick = () => { st.lang = b.dataset.l; drawCard(el, card, st); });
+  el.querySelector('.detail-img').onclick = () => openZoom(card, lang);
   el.querySelectorAll('#d-variant button').forEach(b => b.onclick = () => { st.variant = b.dataset.v; drawCard(el, card, st); });
   el.querySelector('#d-set').onclick = e => { e.preventDefault(); closeSheet(); openSetInCatalog(card.set); };
   el.querySelector('#d-add').onclick = () => openItemForm({ cardId: card.id, lang: st.lang, variant: st.variant });
@@ -1227,6 +1242,8 @@ async function boot() {
 
   initScanner({
     cards: () => S.lite || [],
+    full: id => S.cards.get(id),
+    sigsUrl: 'data/sigs.bin',
     loadCards: ensureLite,
     sets: () => S.sets,
     cardName, cardCode, thumbHTML, eur, imgUrl: cardImg,

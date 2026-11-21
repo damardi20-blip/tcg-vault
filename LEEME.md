@@ -1,4 +1,4 @@
-# TCG Vault
+# DLRS Vault
 
 App web (instalable en el iPhone con icono) para llevar tu colección de cartas Pokémon con precios
 que se actualizan solos cada día. Todo gratis.

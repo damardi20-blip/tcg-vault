@@ -52,6 +52,10 @@ jobs:
             echo "HAY_DATOS=1" >> $GITHUB_ENV
           fi
 
+      - name: Librería de imágenes (huellas del escáner)
+        if: github.event_name != 'push' || env.HAY_DATOS != '1'
+        run: npm install --no-save --no-package-lock sharp@0.33.5
+
       - name: Descargar cartas y precios
         if: github.event_name != 'push' || env.HAY_DATOS != '1'
         run: node scripts/update-data.mjs
@@ -76,6 +80,7 @@ jobs:
         run: |
           mkdir -p _site
           cp -r index.html style.css app.js scanner.js firebase-config.js manifest.json sw.js icons data _site/
+          rm -f _site/data/sigcache.json   # solo hace falta para calcular las huellas
           touch _site/.nojekyll
 
       - uses: actions/upload-pages-artifact@v3

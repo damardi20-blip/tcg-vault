@@ -1,6 +1,8 @@
-// Escáner de cartas: abre la cámara, recorta la carta del marco y lee el texto
-// (nombre y número "044/128") con Tesseract.js, todo en el propio móvil y gratis.
-// Después busca en el catálogo las cartas que mejor encajan.
+// Escáner de cartas, todo en el propio móvil y gratis:
+// 1. Recorta la carta (busca sus bordes dentro del marco).
+// 2. Compara la ilustración con la "huella" de las ~20.000 cartas del catálogo (data/sigs.bin).
+// 3. Lee el número ("044/128") y el nombre con Tesseract.js.
+// 4. Junta las dos pistas y confirma las mejores comparando con la imagen real de cada candidata.
 
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
 
@@ -29,6 +31,7 @@ async function open() {
   document.body.style.overflow = 'hidden';
   status('Encuadra la carta dentro del marco y pulsa el botón');
   getWorker().catch(() => {});   // empieza a descargar el lector de texto mientras tanto
+  ctx.loadCards().then(loadSigs).catch(() => {});   // y las huellas de las cartas
   if (!navigator.mediaDevices?.getUserMedia) {
     status('Este navegador no permite usar la cámara aquí. Pulsa «Foto».');
     return;
@@ -138,26 +141,7 @@ async function analyze(canvas, cropped) {
   $('#scanner-shot').disabled = true;
   $('#scanner-frame').classList.add('busy');
   try {
-    status('Preparando el lector de texto…');
-    const worker = await getWorker();
-    status('Leyendo la carta…');
-    const texts = [];
-    if (cropped) {
-      // Parte de abajo (número de carta) y parte de arriba (nombre), ampliadas; y la carta entera.
-      texts.push((await worker.recognize(region(canvas, 0, 0.86, 1, 1, 2.5))).data.text);
-      texts.push((await worker.recognize(region(canvas, 0, 0, 1, 0.13, 2))).data.text);
-      texts.push((await worker.recognize(region(canvas, 0, 0, 1, 1, 1))).data.text);
-    } else {
-      texts.push((await worker.recognize(region(canvas, 0, 0, 1, 1, 1))).data.text);
-      texts.push((await worker.recognize(region(canvas, 0, 0.55, 1, 1, 1.6))).data.text);
-    }
-    const text = texts.join('\n');
-    status('Buscando en el catálogo…');
-    await ctx.loadCards();
-    const result = match(text);
-    status('Comparando con las imágenes del catálogo…');
-    await visualRerank(result, canvas);
-    await ctx.ensureSets(result.candidates.map(c => c.card.set)).catch(() => {});
+    const { result, text } = await recognize(canvas, cropped);
     close();
     showResults(result, text);
   } catch (e) {
@@ -168,6 +152,191 @@ async function analyze(canvas, cropped) {
     $('#scanner-shot').disabled = false;
     $('#scanner-frame').classList.remove('busy');
   }
+}
+
+// Todo el reconocimiento (sin pantallas): también se usa para probar el escáner con fotos.
+export async function recognize(canvas, cropped = true) {
+  const card = findCard(canvas, cropped);
+  status('Preparando el lector…');
+  const [worker] = await Promise.all([getWorker(), ctx.loadCards(), loadSigs().catch(() => null)]);
+  status('Buscando la ilustración…');
+  const visual = visualSearch(card);
+  status('Leyendo la carta…');
+  const texts = [];
+  // Número de carta: esquinas de abajo, solo dígitos y "/", bien ampliadas.
+  await worker.setParameters({ tessedit_char_whitelist: '0123456789/', tessedit_pageseg_mode: '6' });
+  texts.push((await worker.recognize(region(card, 0, 0.88, 0.5, 1, 3))).data.text);
+  texts.push((await worker.recognize(region(card, 0.5, 0.88, 1, 1, 3))).data.text);
+  // Nombre (arriba) y el resto del texto (idioma, ataques).
+  await worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '3' });
+  texts.push((await worker.recognize(region(card, 0, 0, 1, 0.14, 2))).data.text);
+  texts.push((await worker.recognize(region(card, 0, 0.5, 1, 1, 1.3))).data.text);
+  const text = texts.join('\n');
+  status('Buscando en el catálogo…');
+  const result = match(text, visual);
+  status('Comparando con las imágenes del catálogo…');
+  await ctx.ensureSets([...new Set(result.candidates.map(c => c.card.set))]).catch(() => {});
+  await visualRerank(result, card);
+  return { result, text, card };
+}
+
+// ---------- recorte automático ----------
+// 1.º Separa la carta del fondo: el color del fondo se mide en el borde de la foto y la carta es lo que
+//     se diferencia de él. 2.º Si no sale, busca las líneas rectas más marcadas cerca de cada lado.
+// Si lo encontrado no tiene forma de carta (63×88 mm), se usa la imagen tal cual.
+export function findCard(src, cropped) {
+  const W = 200, H = Math.round(W * src.height / src.width);
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(src, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data;
+  const box = byBackground(d, W, H) || byEdges(d, W, H);
+  if (!box) return src;
+  let [left, top, right, bottom] = box;
+  const w = right - left, h = bottom - top;
+  if (w / h < 0.6 || w / h > 0.84 || (w * h) / (W * H) < (cropped ? 0.25 : 0.1)) return src;
+  const k = src.width / W;
+  const out = document.createElement('canvas');
+  out.width = Math.round(w * k); out.height = Math.round(h * k);
+  out.getContext('2d').drawImage(src, left * k, top * k, w * k, h * k, 0, 0, out.width, out.height);
+  return out;
+}
+function byBackground(d, W, H) {
+  // Color de fondo: mediana de los píxeles del borde exterior de la foto.
+  const border = [];
+  for (let x = 0; x < W; x += 2) for (const y of [0, 1, H - 2, H - 1]) border.push(y * W + x);
+  for (let y = 0; y < H; y += 2) for (const x of [0, 1, W - 2, W - 1]) border.push(y * W + x);
+  const med = ch => { const v = border.map(i => d[i * 4 + ch]).sort((a, b) => a - b); return v[v.length >> 1]; };
+  const bg = [med(0), med(1), med(2)];
+  const spread = Math.sqrt(border.reduce((s, i) => s + (d[i * 4] - bg[0]) ** 2 + (d[i * 4 + 1] - bg[1]) ** 2 + (d[i * 4 + 2] - bg[2]) ** 2, 0) / border.length);
+  if (spread > 60) return null;   // el borde no es un fondo uniforme (la carta llena el marco)
+  const thr = Math.max(45, spread * 2.2);
+  const rows = new Float32Array(H), cols = new Float32Array(W);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = (y * W + x) * 4;
+    if (Math.hypot(d[i] - bg[0], d[i + 1] - bg[1], d[i + 2] - bg[2]) > thr) { rows[y]++; cols[x]++; }
+  }
+  const span = (prof, n, other) => {
+    let a = 0, b = n - 1;
+    while (a < n && prof[a] < other * 0.25) a++;
+    while (b > a && prof[b] < other * 0.25) b--;
+    return b - a > n * 0.2 ? [a, b + 1] : null;
+  };
+  const ys = span(rows, H, W), xs = span(cols, W, H);
+  if (!ys || !xs) return null;
+  if ((xs[1] - xs[0]) > W * 0.97 && (ys[1] - ys[0]) > H * 0.97) return null;   // ya es toda la carta
+  return [xs[0], ys[0], xs[1], ys[1]];
+}
+function byEdges(d, W, H) {
+  const L = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) L[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+  const rows = new Float32Array(H), cols = new Float32Array(W);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x;
+    rows[y] += Math.abs(L[i + W] - L[i - W]);
+    cols[x] += Math.abs(L[i + 1] - L[i - 1]);
+  }
+  const edge = (prof, from, to, outerFirst) => {
+    let max = 0;
+    for (let i = from; i < to; i++) max = Math.max(max, prof[i]);
+    if (!max) return null;
+    const idx = [];
+    for (let i = from; i < to; i++) idx.push(i);
+    if (!outerFirst) idx.reverse();
+    return idx.find(i => prof[i] >= max * 0.55) ?? null;
+  };
+  const m = 0.32;
+  const box = [edge(cols, 1, Math.round(W * m), true), edge(rows, 1, Math.round(H * m), true),
+    edge(cols, Math.round(W * (1 - m)), W - 1, false), edge(rows, Math.round(H * (1 - m)), H - 1, false)];
+  return box.some(v => v == null) ? null : box;
+}
+
+// ---------- búsqueda visual en todo el catálogo ----------
+const FP_W = 8, FP_H = 6, FP_LEN = FP_W * FP_H * 3, CELLS = FP_W * FP_H, DROP = 12;
+const cell = new Float32Array(CELLS);
+let sigsPromise = null;
+export function loadSigs() {
+  if (!sigsPromise) {
+    sigsPromise = fetch(ctx.sigsUrl).then(r => (r.ok ? r.arrayBuffer() : null)).then(b => (lastSigs = b ? new Int8Array(b) : null));
+    sigsPromise.catch(() => { sigsPromise = null; });
+  }
+  return sigsPromise;
+}
+// Reduce poco a poco (a saltos de la mitad) para que se parezca a cómo se calculó la huella en el servidor.
+function shrink(src, sx, sy, sw, sh, W, H) {
+  let c = document.createElement('canvas'), w = sw, h = sh;
+  c.width = Math.max(W, Math.round(sw)); c.height = Math.max(H, Math.round(sh));
+  c.getContext('2d').drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  while (c.width / 2 >= W && c.height / 2 >= H) {
+    const n = document.createElement('canvas');
+    n.width = Math.round(c.width / 2); n.height = Math.round(c.height / 2);
+    const g = n.getContext('2d'); g.imageSmoothingQuality = 'high';
+    g.drawImage(c, 0, 0, n.width, n.height);
+    c = n;
+  }
+  const f = document.createElement('canvas');
+  f.width = W; f.height = H;
+  const g = f.getContext('2d', { willReadFrequently: true }); g.imageSmoothingQuality = 'high';
+  g.drawImage(c, 0, 0, W, H);
+  return g.getImageData(0, 0, W, H).data;
+}
+function fingerprint(src) {
+  const w = src.width, h = src.height;
+  const d = shrink(src, w * 0.09, h * 0.11, w * 0.82, h * 0.40, FP_W, FP_H);
+  const n = FP_W * FP_H, v = new Float32Array(FP_LEN);
+  for (let ch = 0; ch < 3; ch++) {
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += d[i * 4 + ch];
+    mean /= n;
+    let sd = 0;
+    for (let i = 0; i < n; i++) sd += (d[i * 4 + ch] - mean) ** 2;
+    sd = Math.sqrt(sd / n) || 1;
+    for (let i = 0; i < n; i++) v[ch * n + i] = ((d[i * 4 + ch] - mean) / sd) * 40;
+  }
+  return v;
+}
+// Devuelve un mapa id de carta → parecido (0-1) con las 60 más parecidas de todo el catálogo.
+export function visualSearch(photo) {
+  const out = new Map();
+  const all = ctx.cards();
+  const sigs = sigsPromise && lastSigs;
+  if (!sigs || sigs.length < all.length * FP_LEN) return out;
+  // Varias versiones del recorte (por si los bordes no son exactos): se queda con el mejor parecido.
+  const fps = [0, 0.03, -0.03].map(m => fingerprint(inset(photo, m)));
+  const top = [];
+  for (let k = 0; k < all.length; k++) {
+    const o = k * FP_LEN;
+    let nz = 0;
+    for (let i = 0; i < FP_LEN; i += 7) nz |= sigs[o + i];
+    if (!nz) continue;
+    let sim = -1;
+    for (const fp of fps) {
+      // Parecido por zonas: se descartan las 12 zonas (de 48) que menos se parecen, que suelen ser
+      // reflejos de luz o la funda. Así un brillo en la foto no estropea la comparación.
+      for (let j = 0; j < CELLS; j++) cell[j] = sigs[o + j] * fp[j] + sigs[o + CELLS + j] * fp[CELLS + j] + sigs[o + 2 * CELLS + j] * fp[2 * CELLS + j];
+      cell.sort();
+      let s = 0;
+      for (let j = DROP; j < CELLS; j++) s += cell[j];
+      if (s > sim) sim = s;
+    }
+    sim /= (CELLS - DROP) * 3 * 1600;
+    if (top.length < 60 || sim > top[top.length - 1][1]) {
+      top.push([k, sim]); top.sort((a, b) => b[1] - a[1]); if (top.length > 60) top.pop();
+    }
+  }
+  for (const [k, sim] of top) out.set(all[k].id, sim);
+  return out;
+}
+let lastSigs = null;
+// Recorte con margen (m > 0 quita borde, m < 0 añade).
+function inset(src, m) {
+  if (!m) return src;
+  const c = document.createElement('canvas');
+  c.width = src.width; c.height = src.height;
+  const dx = src.width * m, dy = src.height * m;
+  c.getContext('2d').drawImage(src, dx, dy, src.width - 2 * dx, src.height - 2 * dy, 0, 0, c.width, c.height);
+  return c;
 }
 
 function lev(a, b) {
@@ -186,7 +355,7 @@ const LANG_HINTS = {
   it: ['base', 'debolezza', 'resistenza', 'ritirata', 'evoluzione', 'allenatore', 'aiuto', 'strumento', 'fase', 'illustr'],
 };
 
-export function match(rawText) {
+export function match(rawText, visual = new Map()) {
   const text = norm(rawText);
   // Los "/" a veces se leen como "|", "\", "l" o "1" pegado.
   const nums = [...rawText.matchAll(/(\d{1,3})\s*[\/|\\]\s*(\d{2,3})/g)].map(m => ({ n: parseInt(m[1], 10), total: parseInt(m[2], 10) }));
@@ -226,7 +395,10 @@ export function match(rawText) {
       }
     }
     s += nameHit;
-    if (s >= 3) scored.push({ card, s });
+    // Parecido de la ilustración con todo el catálogo (las 60 más parecidas).
+    const vis = visual.get(card.id);
+    if (vis != null) s += Math.max(0, vis - 0.3) * 14;
+    if (s >= 3 || (vis != null && vis > 0.45)) scored.push({ card, s, vis });
   }
   scored.sort((a, b) => b.s - a.s);
   return { candidates: scored.slice(0, 40), lang, nums };
@@ -287,10 +459,12 @@ export async function visualRerank(result, photo) {
   let list = result.candidates;
   // Si el texto no dio pistas, se compara con las cartas de la colección abierta en el catálogo.
   if (!list.length) list = ctx.fallbackCards().map(card => ({ card, s: 0 }));
+  list = list.slice(0, 25);
   const queue = [...list];
   await Promise.all(Array.from({ length: 8 }, async () => {
     while (queue.length) {
       const item = queue.shift();
+      item.card = ctx.full(item.card.id) || item.card;
       const sig = await cardSignature(item.card, result.lang);
       item.sim = sig ? similarity(photoSig, sig) : 0;
       item.s += Math.max(0, item.sim) * 20;
@@ -298,7 +472,7 @@ export async function visualRerank(result, photo) {
   }));
   list.sort((a, b) => b.s - a.s);
   // Sin texto, solo nos quedamos con parecidos claros.
-  result.candidates = list.filter(x => x.s >= 4 || x.sim > 0.55).slice(0, 8);
+  result.candidates = list.filter(x => x.s >= 4 || x.sim > 0.5).slice(0, 8);
 }
 
 function showResults({ candidates, lang }, text) {

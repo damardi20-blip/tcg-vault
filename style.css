@@ -81,6 +81,8 @@ main { max-width: 860px; margin: 0 auto; padding: 14px 16px 24px; }
 .chart .axis-y { transform: translateY(-50%); }
 .chart .axis-x { bottom: 1px; }
 .chart .axis-x.end { right: 4px; }
+.brand-name { font-weight: 800; font-style: italic; letter-spacing: .5px; }
+.brand-name em { color: #e5b53a; font-weight: 700; margin-left: 2px; }
 .chart .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 13px; text-align: center; padding: 0 20px; }
 .chart-tip {
   position: absolute; top: 0; pointer-events: none; transform: translateX(-50%);
@@ -248,6 +250,15 @@ a.link { color: inherit; text-decoration: underline; text-decoration-color: rgba
 /* ---------- ficha de carta ---------- */
 .detail-top { display: flex; gap: 16px; align-items: flex-start; }
 .detail-img { width: 44%; max-width: 250px; flex: none; }
+.detail-img { cursor: zoom-in; }
+.zoom {
+  position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,.94); display: grid; place-items: center;
+  padding: max(10px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  opacity: 0; transition: opacity .2s; touch-action: pinch-zoom;
+}
+.zoom.on { opacity: 1; }
+.zoom img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; border-radius: 4.5% / 3.2%; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+.zoom-close { position: absolute; top: max(12px, env(safe-area-inset-top)); right: 12px; background: rgba(255,255,255,.12); }
 .detail-img .thumb { border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
 .detail-head { flex: 1; min-width: 0; }
 .detail-head h2 { font-size: 22px; }
