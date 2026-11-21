@@ -77,3 +77,11 @@ solo tienen nombres e imágenes en inglés en TCGdex, pero puedes guardarlas en 
 - Precios: guía de precios pública de Cardmarket (un archivo con todas las cartas, gratis).
 - Precio por idioma: API de CardTrader (gratis con cuenta).
 - Lector de texto del escáner: Tesseract.js (se ejecuta en el propio móvil).
+
+## Escáner con IA (Gemini, gratis)
+
+El escáner manda la foto a un pequeño intermediario en Google Apps Script
+([scripts/intermediario-gemini.gs](scripts/intermediario-gemini.gs)), que se la pasa a Gemini con la
+clave guardada en *Propiedades de secuencia de comandos* (`GEMINI_KEY`). La clave nunca está en la app
+ni en GitHub. Si no hay internet o se acaba el cupo gratuito del día, se usa el escáner sin IA.
+Si cambias el intermediario, vuelve a implementarlo y pon su dirección `/exec` en `AI.proxy` (scanner.js).

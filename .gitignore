@@ -3,3 +3,4 @@ node_modules/
 # Los datos de cartas y precios se generan cada día en GitHub (rama "datos")
 data/
 .claude/
+imagenes prueba escaner/

@@ -19,7 +19,7 @@ export function initScanner(context) {
   ctx = context;
   $('#scan-btn').onclick = open;
   $('#scanner-close').onclick = close;
-  $('#scanner-shot').onclick = () => captureFromVideo();
+  $('#scanner-shot').onclick = () => { noCard = 0; captureFromVideo(); };
   $('#scanner-photo').onclick = () => $('#scanner-file').click();
   $('#scanner-file').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) captureFromFile(f); };
 }
@@ -29,6 +29,7 @@ function status(msg) { $('#scanner-status').textContent = msg; }
 async function open() {
   $('#scanner').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
+  noCard = 0;
   status('Encuadra la carta dentro del marco y pulsa el botón');
   getWorker().catch(() => {});   // empieza a descargar el lector de texto mientras tanto
   ctx.loadCards().then(loadSigs).catch(() => {});   // y las huellas de las cartas
@@ -132,8 +133,40 @@ async function captureFromVideo(hint = null) {
 // Con la cámara abierta, cada medio segundo compara lo que ve con la huella de todas las cartas.
 // Cuando la misma carta sale la primera 3 veces seguidas con un parecido claro, captura sola
 // (con la imagen a máxima resolución) sin tener que pulsar el botón.
-let autoTimer = null;
+let autoTimer = null, noCard = 0;
 function autoScan() {
+  if (aiAvailable()) return steadyScan();
+  return visualAutoScan();
+}
+// Con IA: cuando la imagen se queda quieta un momento (la carta está encuadrada), captura sola.
+// Si dos veces seguidas no había carta, deja de capturar sola hasta que se pulse el botón.
+function steadyScan() {
+  let prev = null, still = 0;
+  const tick = () => {
+    if (!stream || busy) return;
+    if (noCard >= 2) { status('Encuadra la carta y pulsa el botón'); return; }
+    const c = cropFromVideo(48);
+    if (c) {
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      const g = new Float32Array(d.length / 4);
+      let mean = 0;
+      for (let i = 0; i < g.length; i++) { g[i] = d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11; mean += g[i]; }
+      mean /= g.length;
+      let varc = 0; for (const v of g) varc += (v - mean) ** 2;
+      const detail = Math.sqrt(varc / g.length);
+      let diff = 0;
+      if (prev && prev.length === g.length) { for (let i = 0; i < g.length; i++) diff += Math.abs(g[i] - prev[i]); diff /= g.length; } else diff = 99;
+      prev = g;
+      if (diff < 4 && detail > 18) still++; else still = 0;
+      status(still >= 2 ? 'Mantén la carta quieta…' : 'Encuadra la carta: se captura sola al dejarla quieta');
+      if (still >= 4) { captureFromVideo(); return; }
+    }
+    autoTimer = setTimeout(tick, 300);
+  };
+  clearTimeout(autoTimer);
+  autoTimer = setTimeout(tick, 800);
+}
+function visualAutoScan() {
   let lastId = null, streak = 0, misses = 0;
   const tick = async () => {
     if (!stream || busy) return;
@@ -184,6 +217,30 @@ async function analyze(canvas, cropped, hint = null) {
   $('#scanner-shot').disabled = true;
   $('#scanner-frame').classList.add('busy');
   try {
+    if (aiAvailable()) {
+      status('Reconociendo la carta…');
+      try {
+        const info = await aiIdentify(canvas);
+        if (info && info.found === false) {
+          status('No veo ninguna carta. Acércala al marco y pulsa el botón.');
+          noCard++;
+          return;
+        }
+        if (info) {
+          await ctx.loadCards();
+          const result = aiMatch(info);
+          if (result.candidates.length) {
+            await ctx.ensureSets([...new Set(result.candidates.map(c => c.card.set))]).catch(() => {});
+            close();
+            showResults(result, aiSummary(info));
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn('IA:', e);
+        if (e.quota) status('Se ha agotado el uso gratuito de la IA por hoy; uso el escáner sin IA…');
+      }
+    }
     const { result, text } = await recognize(canvas, cropped, hint);
     close();
     showResults(result, text);
@@ -194,7 +251,7 @@ async function analyze(canvas, cropped, hint = null) {
     busy = false;
     $('#scanner-shot').disabled = false;
     $('#scanner-frame').classList.remove('busy');
-    if (stream) autoScan();   // si algo falló y la cámara sigue abierta, sigue buscando
+    if (stream) setTimeout(() => stream && !busy && autoScan(), 1500);   // si no se reconoció y la cámara sigue abierta, sigue
   }
 }
 
@@ -225,6 +282,107 @@ export async function recognize(canvas, cropped = true, hint = null) {
   await visualRerank(result, card);
   return { result, text, card };
 }
+
+
+// ---------- reconocimiento con IA (Gemini, plan gratuito de Google) ----------
+// La foto se envía a Gemini, que devuelve nombre, número, código e idioma de la carta; con eso se busca
+// en el catálogo. Si no hay internet o falla, se usa el escáner sin IA (huellas + lector de texto).
+// La foto va a un intermediario en Google Apps Script (scripts/intermediario-gemini.gs) que guarda la
+// clave de Gemini en la cuenta de Google del dueño: la clave nunca está en la app ni en GitHub.
+const AI = {
+  proxy: 'https://script.google.com/macros/s/AKfycbyGhy_bLemfW4j33CsaOJg0nayze1Afm3yZ0C06yfSQogvhz8ex5BAu1XjcfTlypmt3/exec',
+};
+const AI_PROMPT = `Identify this Pokémon TCG card in the photo (it may be inside a sleeve or toploader, with reflections).
+Return ONLY a JSON object with these fields:
+- found: true if a Pokémon TCG card is clearly visible, false otherwise
+- name_printed: the card name exactly as printed (in the card's language)
+- name_en: the official English name of the card (e.g. "Galarian Meowth", "Crobat G", "Charizard ex")
+- number: the collector number printed at the bottom before the slash (e.g. "141", "047", "TG12"); "" if not visible
+- total: the number after the slash (e.g. "128"); "" if none
+- set_code: the small set code printed near the number (e.g. "30C", "M6a", "SVI", "PAL"); "" if none
+- language: one of es, en, it, ja, fr, de, pt, other
+- set_name_en: the English name of the expansion if you know it
+- anniversary_stamp: "30" if the card has the Pikachu "30" 30th anniversary logo, "25" if it has the 25th anniversary logo, "" otherwise`;
+export const aiAvailable = () => !!AI.proxy && navigator.onLine !== false;
+
+function toJpeg(canvas, max = 1024) {
+  const k = Math.min(1, max / Math.max(canvas.width, canvas.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(canvas.width * k); c.height = Math.round(canvas.height * k);
+  c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.85).split(',')[1];
+}
+
+export async function aiIdentify(canvas) {
+  // text/plain para que el navegador no haga la consulta previa de CORS (Apps Script no la admite).
+  const body = JSON.stringify({ image: toJpeg(canvas), prompt: AI_PROMPT });
+  let lastErr = null;
+  for (let tries = 0; tries < 2; tries++) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 25000);
+    try {
+      const res = await fetch(AI.proxy, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body, signal: ctl.signal });
+      clearTimeout(timer);
+      const data = await res.json();
+      if (data.error === 'cuota') throw Object.assign(new Error('cuota'), { quota: true });
+      if (data.error) { lastErr = new Error(data.error); continue; }
+      const txt = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+      let info = JSON.parse(txt.replace(/^```json|```$/g, '').trim());
+      if (Array.isArray(info)) info = info[0];
+      return info || null;
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.quota) throw e;
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('IA no disponible');
+}
+
+// Puntúa cada carta del catálogo según lo que ha leído la IA.
+export function aiMatch(info) {
+  const sets = ctx.sets();
+  const nn = x => norm(x).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();   // conserva letras japonesas
+  const numN = x => String(x || '').toUpperCase().replace(/^([A-Z]*)0+(?=\d)/, '$1').trim();
+  const num = numN(info.number), total = parseInt(info.total, 10) || null;
+  const nameEn = nn(info.name_en), namePr = nn(info.name_printed);
+  const code = nn(info.set_code).replace(/ /g, '');
+  const lang = String(info.language || '').toLowerCase();
+  const stamp = String(info.anniversary_stamp || '');
+  const setWords = new Set(nn(info.set_name_en).split(' ').filter(w => w.length > 2).map(w => w.replace(/s$/, '')));
+  // La IA confunde el logo del 25 y el del 30 aniversario: cualquiera de los dos apunta a estas colecciones.
+  const STAMP_SETS = ['30th', '30th-c', 'M6a', 'cel25', 'cel25cc'];
+  // Colecciones de reimpresiones que conservan el número original impreso (p. ej. Crobat G 47/127).
+  const CLASSIC = ['30th-c', 'cel25cc'];
+  const scored = [];
+  for (const card of ctx.cards()) {
+    const set = sets.get(card.set);
+    if (!set) continue;
+    let s = 0;
+    const names = Object.values(card.name || {}).map(nn);
+    if (names.some(n => n && (n === nameEn || n === namePr))) s += 6;
+    else if (names.some(n => n && n.length >= 3 && ((nameEn && (nameEn.includes(n) || n.includes(nameEn))) || (namePr && (namePr.includes(n) || n.includes(namePr)))))) s += 3;
+    if (s === 0) continue;   // sin coincidencia de nombre no es candidata
+    if (num && numN(card.num) === num) { s += 5; if (total && (total === set.official || total === set.total)) s += 3; }
+    const sc = nn(set.code).replace(/ /g, '');
+    if (code && (code === sc || code === nn(set.id).replace(/ /g, ''))) s += 4;
+    else if (code && code.length >= 2 && lev(code, sc) <= 1) s += 2;
+    if (lang === 'ja') s += set.japanese ? 2 : -2; else if (lang && set.japanese) s -= 4;
+    if (stamp) s += STAMP_SETS.includes(set.id) ? 6 : -6;   // con logo de aniversario no puede ser la carta original
+    if (total && set.official && total !== set.official && total !== set.total) s += CLASSIC.includes(set.id) && stamp ? 2 : -3;
+    if (setWords.size) {
+      const w = new Set(nn(set.name?.en || '').split(' ').filter(x => x.length > 2).map(x => x.replace(/s$/, '')));
+      let hit = 0; for (const x of setWords) if (w.has(x)) hit++;
+      s += 3 * hit / Math.max(setWords.size, w.size || 1);
+    }
+    scored.push({ card, s });
+  }
+  scored.sort((a, b) => b.s - a.s);
+  const best = scored[0]?.s || 0;
+  return { candidates: scored.filter(x => x.s >= Math.max(6, best - 6)).slice(0, 8), lang: ['es', 'en', 'it', 'ja'].includes(lang) ? lang : null, nums: [] };
+}
+
+const aiSummary = info => `Reconocida con IA: ${info.name_printed || info.name_en || '?'}${info.number ? ` · ${info.number}${info.total ? '/' + info.total : ''}` : ''}${info.set_code ? ` · ${info.set_code}` : ''}${info.language ? ` · ${info.language}` : ''}`;
 
 // ---------- recorte automático ----------
 // 1.º Separa la carta del fondo: el color del fondo se mide en el borde de la foto y la carta es lo que
@@ -534,14 +692,14 @@ function showResults({ candidates, lang }, text) {
     }).join('');
     el.innerHTML = `<div class="scan-results">
       <h2>${candidates.length ? (candidates.length === 1 || candidates[0].s - (candidates[1]?.s || 0) >= 3 ? '¿Es esta carta?' : '¿Cuál de estas es?') : 'No he reconocido la carta'}</h2>
-      ${lang ? `<div class="note">Parece una carta en ${({ es: 'español', en: 'inglés', it: 'italiano' })[lang]}.</div>` : ''}
+      ${lang ? `<div class="note">Parece una carta en ${({ es: 'español', en: 'inglés', it: 'italiano', ja: 'japonés' })[lang]}.</div>` : ''}
       ${list || '<p class="muted">Prueba con más luz, sin reflejos y con la carta llenando el marco. También puedes buscarla por nombre o número.</p>'}
       <div class="form" style="margin-top:14px">
         <input id="scan-q" type="search" placeholder="Buscar a mano: nombre o número (ej. 044)">
         <div id="scan-q-res"></div>
         <button class="btn secondary block" id="scan-again">Escanear otra vez</button>
       </div>
-      <details style="margin-top:12px"><summary class="muted">Texto leído</summary><div class="ocr-text">${esc(text.trim() || '(nada)')}</div></details>
+      <details style="margin-top:12px"><summary class="muted">${text.startsWith('Reconocida con IA') ? 'Qué ha leído la IA' : 'Texto leído'}</summary><div class="ocr-text">${esc(text.trim() || '(nada)')}</div></details>
     </div>`;
     el.querySelectorAll('.cand').forEach(b => b.onclick = () => ctx.openCard(b.dataset.id, b.dataset.lang || null));
     el.querySelector('#scan-again').onclick = () => { ctx.closeScannerSheet(); open(); };
