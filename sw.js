@@ -1,5 +1,5 @@
 // Service worker: permite abrir la app sin conexión y guarda las imágenes de cartas ya vistas.
-const VERSION = 'v3';
+const VERSION = 'v4';
 const SHELL = `tcgvault-shell-${VERSION}`;
 const DATA = 'tcgvault-data';
 const IMAGES = 'tcgvault-images';
@@ -24,7 +24,7 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
 
   // Imágenes de cartas: primero la copia guardada (no cambian nunca).
-  if (url.hostname === 'assets.tcgdex.net') {
+  if (['assets.tcgdex.net', 'images.pokemontcg.io', 'images.scrydex.com'].includes(url.hostname)) {
     e.respondWith(caches.open(IMAGES).then(async c => {
       const hit = await c.match(req);
       if (hit) return hit;

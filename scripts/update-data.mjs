@@ -210,10 +210,31 @@ async function cardTraderForSet(setMeta, cards) {
   return out;
 }
 
-// ---------- logos que faltan en TCGdex ----------
+// ---------- logos e imágenes que faltan en TCGdex ----------
 // Se buscan en otros idiomas de TCGdex y, si no, en pokemontcg.io (misma fecha de salida y nombre parecido).
-const PTCG_SETS = 'https://api.pokemontcg.io/v2/sets?pageSize=250&select=id,name,releaseDate,images';
-const LOGO_FROM = { rc: 'bw11', exu: 'ex10', M6a: 'me55' };   // subcolecciones sin logo propio
+const PTCG = 'https://api.pokemontcg.io/v2';
+const PTCG_FROM = { rc: 'bw11', exu: 'ex10', M6a: 'me55' };   // subcolecciones sin entrada propia
+let ptcgSetsCache = null;
+async function ptcgSets() {
+  // pokemontcg.io falla a ratos (500/502): se reintenta más veces y, si no responde, se prueba otro día.
+  if (!ptcgSetsCache) {
+    const d = (await getJSON(`${PTCG}/sets?pageSize=250&select=id,name,releaseDate,images`, {}, 8).catch(e => { console.warn('  ! ' + e.message); return null; }))?.data;
+    if (!d?.length) return [];
+    ptcgSetsCache = d;
+  }
+  return ptcgSetsCache;
+}
+const words = s => new Set(normName(s).split(' ').filter(Boolean));
+async function ptcgSetFor(m) {
+  const all = await ptcgSets();
+  if (PTCG_FROM[m.id]) return all.find(p => p.id === PTCG_FROM[m.id]) || null;
+  if (!m.release) return null;
+  const sameDay = all.filter(p => p.releaseDate.replace(/\//g, '-') === m.release);
+  const mine = words(m.name.en || m.name.es || '');
+  const score = p => { const w = words(p.name); let n = 0; for (const x of mine) if (w.has(x)) n++; return n / Math.max(w.size, mine.size, 1); };
+  return sameDay.sort((a, b) => score(b) - score(a))[0] || null;
+}
+
 async function fillLogos(index) {
   const missing = index.filter(m => !m.logo);
   if (!missing.length) return;
@@ -222,22 +243,46 @@ async function fillLogos(index) {
       const x = await getJSON(`${TCGDEX}/${l}/sets/${encodeURIComponent(m.id)}`, {}, 1).catch(() => null);
       if (x?.logo) { m.logo = x.logo; break; }
     }
-  }
-  const rest = missing.filter(m => !m.logo);
-  if (!rest.length) return;
-  const ptcg = (await getJSON(PTCG_SETS).catch(() => null))?.data || [];
-  const words = s => new Set(normName(s).split(' ').filter(Boolean));
-  for (const m of rest) {
-    let hit = LOGO_FROM[m.id] && ptcg.find(p => p.id === LOGO_FROM[m.id]);
-    if (!hit && m.release) {
-      const sameDay = ptcg.filter(p => p.releaseDate.replace(/\//g, '-') === m.release);
-      const mine = words(m.name.en || m.name.es || '');
-      const score = p => { const w = words(p.name); let n = 0; for (const x of mine) if (w.has(x)) n++; return n / Math.max(w.size, mine.size, 1); };
-      hit = sameDay.sort((a, b) => score(b) - score(a))[0];
-    }
-    if (hit?.images?.logo) m.logo = hit.images.logo;
+    if (!m.logo) m.logo = (await ptcgSetFor(m))?.images?.logo || null;
   }
   console.log(`· logos: ${missing.filter(m => m.logo).length} de ${missing.length} encontrados fuera de TCGdex en inglés`);
+}
+
+// Colecciones sin ninguna imagen en TCGdex: cada carta recibe `im: [pequeña, grande]` de pokemontcg.io.
+// Se empareja por número y, si la numeración es distinta (p. ej. la Colección Clásica), por nombre.
+async function fillImages(m, cards) {
+  if (m.imgLangs?.length || m.japanese || cards.every(c => c.im)) return 0;
+  const ps = await ptcgSetFor(m);
+  if (!ps) return 0;
+  const list = (await getJSON(`${PTCG}/cards?q=set.id:${ps.id}&pageSize=250&select=number,name,images`, {}, 8).catch(e => { console.warn('  ! ' + e.message); return null; }))?.data || [];
+  const normNum = n => String(n).toUpperCase().replace(/^([A-Z]*)0+(?=\d)/, '$1');
+  const byNum = new Map(list.map(c => [normNum(c.number), c]));
+  // Por nombre: si hay varias con el mismo nombre en las dos listas (p. ej. las dos mitades de una LEGEND),
+  // se emparejan en orden. Si no hay nombre exacto, vale uno que empiece igual ("Palkia" → "Palkia LV.X").
+  const groups = new Map();
+  for (const c of list) { const k = normName(c.name); (groups.get(k) || groups.set(k, []).get(k)).push(c); }
+  for (const g of groups.values()) g.sort((a, b) => (parseInt(a.number, 10) || 0) - (parseInt(b.number, 10) || 0));
+  const used = new Set();
+  let n = 0;
+  const put = (card, hit) => { used.add(hit); card.im = [hit.images.small, hit.images.large || hit.images.small]; n++; };
+  const nameOf = card => normName(card.name.en || card.name.es || '');
+  const numOf = card => { try { return normNum(decodeURIComponent(card.num)); } catch { return normNum(card.num); } };
+  // 1.º mismo número y mismo nombre; 2.º solo por nombre con lo que quede libre.
+  for (const card of cards) {
+    const hit = byNum.get(numOf(card));
+    if (hit?.images?.small && !used.has(hit) && normName(hit.name) === nameOf(card)) put(card, hit);
+  }
+  for (const card of cards) {
+    if (card.im) continue;
+    const key = nameOf(card);
+    let hit = (groups.get(key) || []).find(c => !used.has(c));
+    if (!hit) {
+      const pre = list.filter(c => !used.has(c) && normName(c.name).startsWith(key + ' '));
+      if (pre.length === 1) hit = pre[0];
+    }
+    if (hit?.images?.small) put(card, hit);
+  }
+  return n;
 }
 
 // ---------- main ----------
@@ -350,6 +395,14 @@ async function main() {
     index.sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9));
   }
 
+  for (const m of index) {
+    if (m.imgLangs?.length || m.japanese) continue;
+    const file = path.join(DATA, 'sets', `${m.id}.json`);
+    const c = await readJSON(file);
+    if (!c || c.cards.every(x => x.im)) continue;
+    const n = await fillImages(m, c.cards);
+    if (n) { await writeJSON(file, c); console.log(`· ${m.id}: ${n} imágenes de pokemontcg.io`); }
+  }
   const noLogo = index.filter(m => !m.logo);
   await fillLogos(index);
   for (const m of noLogo) if (m.logo) {   // se guarda en el archivo de la colección para no buscarlo cada día

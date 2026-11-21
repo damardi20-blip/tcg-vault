@@ -157,6 +157,7 @@ function setName(set, lang = S.settings.lang) {
 }
 // URL de la imagen: en el idioma pedido si existe, si no en inglés.
 function cardImg(card, lang = S.settings.lang, quality = 'low') {
+  if (card.im) return card.im[quality === 'low' ? 0 : 1];   // imagen de otra fuente (pokemontcg.io)
   const set = setOf(card);
   if (!set || !set.imgLangs?.length) return null;
   const l = set.imgLangs.includes(lang) ? lang : set.imgLangs.includes('en') ? 'en' : set.imgLangs[0];
