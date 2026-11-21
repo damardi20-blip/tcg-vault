@@ -235,12 +235,36 @@ function ctCondPrice(card, lang, variantKey, cond) {
   if (String(variantKey || '').startsWith('reverse')) return null;
   const i = COND_TO_CT[cond];
   if (!i) return null;   // NM/Mint: ya es el precio normal
-  const c = S.data.get(card.set)?.prices.ct?.[card.id]?.[lang]?.c;
-  return c?.[i] ?? null;
+  const e = S.data.get(card.set)?.prices.ct?.[card.id]?.[lang];
+  const p = e?.c?.[i] ?? null;
+  return p != null && isDubious(p, e.cc?.[i], priceRef(card, variantKey)) ? null : p;
+}
+// Precio de referencia de una carta: la mediana de la tendencia de Cardmarket y de los precios NM de
+// CardTrader en los otros idiomas que tengan al menos 3 anuncios.
+function priceRef(card, variantKey, exceptLang) {
+  const refs = [];
+  const cm = cmPrice(card, variantKey);
+  if (cm) refs.push(cm);
+  const all = S.data.get(card.set)?.prices.ct?.[card.id] || {};
+  const k = String(variantKey || '').startsWith('reverse') ? 'r' : 'n';
+  for (const l of ['es', 'en', 'it', 'ja']) if (l !== exceptLang && all[l]?.[k] && all[l][k + 'c'] >= 3) refs.push(all[l][k]);
+  if (!refs.length) return null;
+  refs.sort((a, b) => a - b);
+  return refs[Math.floor((refs.length - 1) / 2)];
+}
+// Un precio con muy pocos anuncios (≤ 3) y más del triple de la referencia no es fiable
+// (p. ej. un único Lugia en español a 5.000 €): se enseña, pero no se usa para valorar.
+const isDubious = (price, count, ref) => price != null && ref != null && (count ?? 0) <= 3 && price > ref * 3 && price - ref > 5;
+function ctPriceOk(card, lang, variantKey) {
+  const p = ctPrice(card, lang, variantKey);
+  if (p == null) return null;
+  const e = S.data.get(card.set)?.prices.ct?.[card.id]?.[lang];
+  const k = String(variantKey || '').startsWith('reverse') ? 'rc' : 'nc';
+  return isDubious(p, e?.[k], priceRef(card, variantKey, lang)) ? null : p;
 }
 function marketPrice(card, lang, variantKey = defaultVariant(card)) {
   const cm = cmPrice(card, variantKey);
-  const ct = ctPrice(card, lang, variantKey);
+  const ct = ctPriceOk(card, lang, variantKey);
   if (S.settings.priceSource === 'cm') return cm != null ? { value: cm, src: 'Cardmarket' } : ct != null ? { value: ct, src: 'CardTrader ' + LANG_SHORT[lang] } : { value: null, src: '' };
   return ct != null ? { value: ct, src: 'CardTrader ' + LANG_SHORT[lang] } : cm != null ? { value: cm, src: 'Cardmarket' } : { value: null, src: '' };
 }
@@ -842,10 +866,13 @@ function drawCard(el, card, st) {
   const variants = cardVariants(card);
   const hasRev = ctAll && Object.values(ctAll).some(x => x?.r);
 
-  let anyCond = false;
+  let anyCond = false, anyBad = false;
   const ctRows = (set.japanese ? ['ja'] : ['es', 'en', 'it', 'ja']).map(l => {
     const c = ctAll?.[l];
-    let row = `<tr class="${l === lang ? 'mine' : ''}"><td>${LANG_LABEL[l]}</td><td>${eur(c?.n)}</td><td>${c?.nc ?? '—'}</td>${hasRev ? `<td>${eur(c?.r)}</td>` : ''}</tr>`;
+    const ref = priceRef(card, st.variant, l);
+    const bad = isDubious(c?.n, c?.nc, ref);
+    if (bad) anyBad = true;
+    let row = `<tr class="${l === lang ? 'mine' : ''}"><td>${LANG_LABEL[l]}</td><td>${bad ? `<span class="dubious">${eur(c?.n)}</span>*` : eur(c?.n)}</td><td>${c?.nc ?? '—'}</td>${hasRev ? `<td>${eur(c?.r)}</td>` : ''}</tr>`;
     // Si hay anuncios en otros estados, debajo: el más barato de cada estado y cuántos hay.
     if (c?.c) {
       anyCond = true;
@@ -892,6 +919,7 @@ function drawCard(el, card, st) {
   <div class="panel">
     <div class="box-title">CardTrader por idioma <small>más barato en NM</small></div>
     ${ctAll ? `<table class="lang-prices"><tr><th>Idioma</th><th>Desde (NM)</th><th>Anuncios</th>${hasRev ? '<th>Reverse</th>' : ''}</tr>${ctRows}</table>
+      ${anyBad ? `<div class="note warn">* Precio dudoso: muy pocos anuncios y más del triple de lo normal para esta carta. No se usa para valorar tu colección.</div>` : ''}
       ${anyCond ? `<div class="note">Por estado, el más barato y cuántos hay: <b>NM</b> casi nueva · <b>SP</b> poco jugada · <b>MP</b> bastante jugada · <b>PL</b> jugada · <b>PO</b> muy jugada. Tus cartas se valoran con el precio de su estado.</div>` : ''}`
       : `<div class="note" style="margin-top:0">${S.index.ct ? 'No hay anuncios de esta carta en CardTrader.' : 'Todavía no está conectado CardTrader. Cuando añadamos tu token aparecerá aquí el precio en español, inglés, italiano y japonés.'}</div>`}
   </div>
@@ -911,7 +939,7 @@ function drawCard(el, card, st) {
       <dt>Colección</dt><dd>${esc(set.code)} · ${esc(year(set.release))}</dd>
     </dl>
     <div class="links">
-      <a href="${esc(cardmarketUrl(card))}" target="_blank" rel="noopener">Ver en Cardmarket</a>
+      <a href="${esc(cardmarketUrl(card))}" target="_blank" rel="noopener" id="d-cm">Buscar en Cardmarket</a>
       <a href="${esc(cardtraderUrl(card))}" target="_blank" rel="noopener">Ver en CardTrader</a>
     </div>
   </div>`;
@@ -931,6 +959,10 @@ function drawCard(el, card, st) {
 
   el.querySelectorAll('#d-lang button').forEach(b => b.onclick = () => { st.lang = b.dataset.l; drawCard(el, card, st); });
   el.querySelector('.detail-img').onclick = () => openZoom(card, lang);
+  el.querySelector('#d-cm').onclick = () => {
+    const q = cardmarketQuery(card);
+    navigator.clipboard?.writeText(q).then(() => toast(`Copiado «${q}»: pégalo en el buscador de Cardmarket`), () => {});
+  };
   el.querySelectorAll('#d-variant button').forEach(b => b.onclick = () => { st.variant = b.dataset.v; drawCard(el, card, st); });
   el.querySelector('#d-set').onclick = e => { e.preventDefault(); closeSheet(); openSetInCatalog(card.set); };
   el.querySelector('#d-add').onclick = () => openItemForm({ cardId: card.id, lang: st.lang, variant: st.variant });
@@ -943,13 +975,14 @@ function drawCard(el, card, st) {
   el.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openItemForm(S.items.find(i => i.id === b.dataset.edit)));
 }
 
-function cardmarketUrl(card) {
-  const set = setOf(card);
+// Cardmarket pide iniciar sesión para cualquier enlace directo (búsqueda o carta), así que se abre su
+// portada de Pokémon y se copia el nombre de la carta para pegarlo en su buscador.
+function cardmarketQuery(card) {
   const name = card.name.en || card.name.es || card.name.ja;
-  // Cardmarket no encuentra nada si se añade el código de colección y el número: se busca solo por nombre
-  // (sin "Lv.12" y similares) y en la lista se elige la colección.
-  const q = String(name).replace(/\s+Lv\.?\s*\d+$/i, '').trim();
-  return `https://www.cardmarket.com/es/Pokemon/Products/Search?searchString=${encodeURIComponent(q)}`;
+  return String(name).replace(/\s+Lv\.?\s*\d+$/i, '').trim();
+}
+function cardmarketUrl(card) {
+  return 'https://www.cardmarket.com/es/Pokemon';
 }
 function cardtraderUrl(card) {
   const bp = S.data.get(card.set)?.prices.ct?.[card.id]?.bp || (card.v || []).find(v => v.ct)?.ct;
