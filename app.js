@@ -162,12 +162,12 @@ function cardImg(card, lang = S.settings.lang, quality = 'low') {
   const set = setOf(card);
   if (!set || !set.imgLangs?.length) return null;
   const l = set.imgLangs.includes(lang) ? lang : set.imgLangs.includes('en') ? 'en' : set.imgLangs[0];
-  return `${IMG_BASE}/${l}/${set.serie}/${set.id}/${encodeURIComponent(card.num)}/${quality}.webp`;
+  return `${IMG_BASE}/${l}/${set.serie}/${set.src || set.id}/${encodeURIComponent(card.num)}/${quality}.webp`;
 }
 function cardImgFallback(card, lang, quality) {
   const set = setOf(card);
   if (!set?.imgLangs?.includes('en') || lang === 'en') return null;
-  return `${IMG_BASE}/en/${set.serie}/${set.id}/${encodeURIComponent(card.num)}/${quality}.webp`;
+  return `${IMG_BASE}/en/${set.serie}/${set.src || set.id}/${encodeURIComponent(card.num)}/${quality}.webp`;
 }
 function rarityLabel(card) {
   const r = card.rarity;
@@ -481,7 +481,29 @@ function showView(view) {
   window.scrollTo({ top: 0 });
   render();
 }
+// ---------- precio objetivo de la lista de deseos ----------
+// Cada deseo puede tener `target` (€): la carta se marca cuando su precio actual está en ese valor o por debajo.
+function wishPrice(id) {
+  const c = S.cards.get(id);
+  return c ? marketPrice(c, S.wish[id]?.lang || defaultLang(c)).value : null;
+}
+function wishHits() {
+  return Object.keys(S.wish).filter(id => {
+    const t = Number(S.wish[id]?.target), p = wishPrice(id);
+    return t > 0 && p != null && p <= t;
+  });
+}
+function updateWishBadge() {
+  const n = wishHits().length, b = document.querySelector('.tabbar [data-view="wish"]');
+  if (!b) return;
+  let dot = b.querySelector('.tab-dot');
+  if (!n) { dot?.remove(); return; }
+  if (!dot) { dot = document.createElement('span'); dot.className = 'tab-dot'; b.appendChild(dot); }
+  dot.textContent = n;
+}
+
 function render() {
+  updateWishBadge();
   const v = S.ui.view;
   if (v === 'home') renderHome();
   else if (v === 'catalog') renderCatalog();
@@ -552,12 +574,14 @@ function renderHome() {
     const missingCost = d ? d.cards.filter(c => !have.has(c.id)).reduce((a, c) => a + (marketPrice(c, defaultLang(c)).value || 0), 0) : null;
     return { set, have: have.size, total, missingCost, p: total ? (have.size / total) * 100 : 0 };
   }).sort((a, b) => b.p - a.p);
-  $('#home-progress').innerHTML = prog.length ? `<div class="section-head"><h2>Progreso</h2></div>` + prog.map(({ set, have, total, missingCost, p }) => `
+  const hits = wishHits();
+  const banner = hits.length ? `<button class="wish-alert" data-goto="wish">🔔 ${hits.length === 1 ? '1 carta de tus deseos está' : hits.length + ' cartas de tus deseos están'} a tu precio objetivo o por debajo</button>` : '';
+  $('#home-progress').innerHTML = banner + (prog.length ? `<div class="section-head"><h2>Progreso</h2></div>` + prog.map(({ set, have, total, missingCost, p }) => `
     <button class="progress-item" data-set="${esc(set.id)}">
       <div class="progress-top"><b>${esc(setName(set))} <span class="lang-tag">${esc(set.code)}</span></b><span>${have}/${total}</span></div>
       <div class="bar"><i style="width:${p.toFixed(1)}%"></i></div>
       <div class="progress-foot">${p.toLocaleString('es-ES', { maximumFractionDigits: 1 })} % · ${have >= total ? '¡Completa!' : `te faltan ${total - have}${missingCost != null ? ` · ~${eur(missingCost)} para completarla` : ''}`}</div>
-    </button>`).join('') : '';
+    </button>`).join('') : '');
 
   // Más valiosas
   const top = [...items].sort((a, b) => (itemUnit(b).value || 0) - (itemUnit(a).value || 0)).slice(0, 10);
@@ -654,6 +678,134 @@ const homeItems = () => {
   const g = homeGame();
   return g === 'all' ? S.items : S.items.filter(it => gameOf(S.sets.get(it.setId || setIdOf(it.cardId))) === g);
 };
+
+// ---------- estadísticas de la colección ----------
+// Del juego elegido en «Valor de la colección» (Pokémon, One Piece o todo): reparto del valor por juego,
+// época, colección, idioma, rareza y estado, y las cartas más valiosas.
+function openStats() {
+  const items = homeItems();
+  const g = homeGame();
+  const total = items.reduce((a, it) => a + itemTotal(it), 0);
+  const group = keyOf => {
+    const m = new Map();
+    for (const it of items) {
+      const k = keyOf(it);
+      if (k == null) continue;
+      const o = m.get(k) || m.set(k, { v: 0, n: 0 }).get(k);
+      o.v += itemTotal(it); o.n += it.qty || 1;
+    }
+    return [...m].sort((a, b) => b[1].v - a[1].v);
+  };
+  const bars = (rows, max = 10) => rows.slice(0, max).map(([k, o]) => `
+    <div class="stat-row"><div class="stat-lbl"><span>${esc(k)}</span><b>${eur(o.v)}</b></div>
+      <div class="bar thin"><i style="width:${total ? Math.max(1, (o.v / total) * 100).toFixed(1) : 0}%"></i></div>
+      <div class="stat-sub">${plural(o.n, 'carta', 'cartas')} · ${total ? ((o.v / total) * 100).toLocaleString('es-ES', { maximumFractionDigits: 1 }) : 0} %</div></div>`).join('')
+    + (rows.length > max ? `<div class="note">y ${rows.length - max} más</div>` : '');
+  const setOfItem = it => S.sets.get(it.setId || setIdOf(it.cardId));
+  const card = it => S.cards.get(it.cardId);
+  const sections = [
+    g === 'all' ? ['Por juego', group(it => (gameOf(setOfItem(it)) === 'op' ? 'One Piece' : 'Pokémon'))] : null,
+    ['Por época', group(it => { const st = setOfItem(it); return st ? (gameOf(st) === 'op' ? `One Piece ${st.serieName}` : st.serieName) : null; })],
+    ['Por colección', group(it => { const st = setOfItem(it); return st ? `${setName(st)} (${st.code})` : null; })],
+    ['Por idioma', group(it => LANG_LABEL[it.lang] || it.lang)],
+    ['Por rareza', group(it => { const c = card(it); return c ? (rarityLabel(c) || 'Sin rareza') : null; })],
+    ['Por estado', group(it => (it.graded ? `Gradeada (${it.graded.co})` : (CONDITIONS.find(c => c.k === it.cond)?.label || it.cond)))],
+  ].filter(Boolean);
+  const top = [...items].sort((a, b) => itemTotal(b) - itemTotal(a)).slice(0, 10);
+  openSheet(el => {
+    el.innerHTML = `<div class="stats-sheet">
+      <h2>Estadísticas · ${g === 'all' ? 'Todo' : g === 'op' ? 'One Piece' : 'Pokémon'}</h2>
+      ${items.length ? `
+      <div class="stats">
+        <div class="stat"><b>${eur(total)}</b><span>Valor</span></div>
+        <div class="stat"><b>${items.reduce((a, it) => a + (it.qty || 1), 0)}</b><span>Cartas</span></div>
+        <div class="stat"><b>${new Set(items.map(i => i.cardId)).size}</b><span>Distintas</span></div>
+        <div class="stat"><b>${new Set(items.map(i => setIdOf(i.cardId))).size}</b><span>Colecciones</span></div>
+      </div>
+      ${sections.map(([t, rows]) => rows.length ? `<div class="panel"><div class="box-title">${t}</div>${bars(rows, t === 'Por colección' ? 10 : 8)}</div>` : '').join('')}
+      <div class="panel"><div class="box-title">Las 10 más valiosas</div><div class="list" style="margin-top:0">${top.map((it, i) => {
+        const c = card(it); if (!c) return '';
+        return `<button class="row-item" data-card="${esc(c.id)}" data-lang="${it.lang}"><div class="info"><div class="nm">${i + 1}. ${esc(cardName(c, it.lang))}</div><div class="sub">${esc(cardCode(c))} · ${LANG_SHORT[it.lang] || ''}${(it.qty || 1) > 1 ? ' · ×' + it.qty : ''}</div></div><div class="val"><b>${eur(itemTotal(it))}</b></div></button>`;
+      }).join('')}</div></div>` : '<p class="muted">Todavía no tienes cartas de este juego.</p>'}
+    </div>`;
+    el.querySelectorAll('[data-card]').forEach(b => b.onclick = () => openCard(b.dataset.card, b.dataset.lang));
+  });
+}
+
+// ---------- compartir la colección (enlace de solo lectura) ----------
+// Se guarda una copia de tus cartas (sin precios de compra ni notas) en Firestore, en «shares/<id>», y se
+// genera un enlace …/?ver=<id>. Quien lo abra ve tus cartas y su valor, pero no puede cambiar nada.
+// Es una foto del momento: si cambias tu colección, comparte de nuevo para enviar la versión nueva.
+const K_SHARES = 'tcgvault.shares';
+function myShares() { try { return JSON.parse(localStorage.getItem(K_SHARES)) || []; } catch { return []; } }
+async function shareCollection() {
+  if (!S.items.length) { toast('Tu colección está vacía'); return; }
+  await Sync.init();
+  if (!Sync.db) { toast('Para compartir hace falta conexión'); return; }
+  const name = prompt('¿Con qué nombre quieres que vean tu colección? (opcional)', localStorage.getItem('tcgvault.shareName') || '');
+  if (name === null) return;
+  localStorage.setItem('tcgvault.shareName', name.trim());
+  const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const id = Array.from(crypto.getRandomValues(new Uint8Array(24)), b => abc[b % abc.length]).join('');
+  const items = S.items.map(it => [it.cardId, it.lang, it.variant || '', it.cond || '', it.qty || 1, it.graded ? `${it.graded.co} ${it.graded.grade}` : '', it.manual ?? null]);
+  try {
+    await Sync.fs.setDoc(Sync.fs.doc(Sync.db, 'shares', id), { name: name.trim(), created: Date.now(), items });
+  } catch (e) { console.warn(e); toast('No se pudo compartir (revisa las reglas de Firebase)'); return; }
+  localStorage.setItem(K_SHARES, JSON.stringify([...myShares(), { id, at: Date.now(), n: S.items.length }]));
+  const url = `${location.origin}${location.pathname}?ver=${id}`;
+  if (navigator.share) navigator.share({ title: 'Mi colección en DLRS Vault', url }).catch(() => {});
+  else { navigator.clipboard?.writeText(url); toast('Enlace copiado'); }
+  renderSettings();
+}
+async function stopSharing() {
+  const list = myShares();
+  if (!list.length || !confirm(`¿Dejar de compartir? Los ${list.length === 1 ? 'enlace dejará' : list.length + ' enlaces dejarán'} de funcionar.`)) return;
+  await Sync.init();
+  for (const sh of list) await Sync.fs.deleteDoc(Sync.fs.doc(Sync.db, 'shares', sh.id)).catch(() => {});
+  localStorage.removeItem(K_SHARES);
+  toast('Ya no compartes tu colección');
+  renderSettings();
+}
+
+// Pantalla de una colección compartida (solo lectura).
+async function openViewer(id) {
+  let v = document.getElementById('viewer');
+  if (!v) { v = document.createElement('div'); v.id = 'viewer'; v.className = 'cent'; document.body.appendChild(v); }
+  document.body.style.overflow = 'hidden';
+  const close = () => { v.remove(); document.body.style.overflow = ''; history.replaceState(null, '', location.pathname); };
+  const head = t => `<div class="cent-bar"><b>${t}</b><button class="icon-btn" id="vw-close" type="button" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`;
+  v.innerHTML = head('Colección compartida') + '<div class="cent-body"><p class="muted">Cargando…</p></div>';
+  v.querySelector('#vw-close').onclick = close;
+  await Sync.init();
+  const snap = Sync.db ? await Sync.fs.getDoc(Sync.fs.doc(Sync.db, 'shares', id)).catch(() => null) : null;
+  if (!snap?.exists()) { v.querySelector('.cent-body').innerHTML = '<p>Este enlace ya no existe o no se pudo abrir.</p>'; return; }
+  const data = snap.data();
+  const items = (data.items || []).map(([cardId, lang, variant, cond, qty, graded, manual], i) => {
+    const g = graded ? graded.split(' ') : null;
+    return { id: 'v' + i, cardId, setId: setIdOf(cardId), lang, variant, cond, qty, graded: g ? { co: g[0], grade: g.slice(1).join(' ') } : null, manual };
+  }).filter(it => it.setId);
+  await ensureSets([...new Set(items.map(it => it.setId))]).catch(() => {});
+  let game = 'all';
+  const draw = () => {
+    const list = items.filter(it => S.cards.has(it.cardId) && (game === 'all' || gameOf(S.sets.get(it.setId)) === game))
+      .sort((a, b) => itemTotal(b) - itemTotal(a));
+    const total = list.reduce((a, it) => a + itemTotal(it), 0);
+    const hasOp = items.some(it => gameOf(S.sets.get(it.setId)) === 'op'), hasPkm = items.some(it => gameOf(S.sets.get(it.setId)) !== 'op');
+    v.innerHTML = head(`Colección${data.name ? ' de ' + esc(data.name) : ' compartida'}`) + `<div class="cent-body">
+      <div class="value-card" style="margin:0 0 14px">
+        <div class="value-label">Valor de la colección</div>
+        ${hasOp && hasPkm ? `<div class="seg small game-seg home-game" id="vw-game">${[['pkm', 'Pokémon'], ['op', 'One Piece'], ['all', 'Todo']].map(([k, t]) => `<button data-g="${k}" class="${game === k ? 'on' : ''}">${t}</button>`).join('')}</div>` : ''}
+        <div class="value-big">${eur(total)}</div>
+        <div class="value-delta muted">${plural(list.reduce((a, it) => a + (it.qty || 1), 0), 'carta', 'cartas')} · compartida el ${esc(fmtDate(new Date(data.created).toISOString().slice(0, 10)))} · precios de hoy</div>
+      </div>
+      <div class="grid">${list.map(it => { const c = S.cards.get(it.cardId); return `<button class="tile" data-card="${esc(c.id)}" data-lang="${it.lang}">${thumbHTML(c, it.lang)}${(it.qty || 1) > 1 ? `<span class="badge">×${it.qty}</span>` : ''}<div class="meta"><div class="nm">${esc(cardName(c, it.lang))}</div><div class="row2"><span>${esc(cardCode(c))}</span><b>${eur(itemTotal(it))}</b></div></div></button>`; }).join('')}</div>
+      <p class="note">Solo lectura: es una copia de su colección del día en que la compartió, con los precios de hoy.</p></div>`;
+    v.querySelector('#vw-close').onclick = close;
+    v.querySelector('#vw-game')?.addEventListener('click', e => { const b = e.target.closest('[data-g]'); if (b) { game = b.dataset.g; draw(); } });
+    v.querySelectorAll('[data-card]').forEach(b => b.onclick = () => openCard(b.dataset.card, b.dataset.lang));
+  };
+  draw();
+}
 
 // ---------- vista: catálogo ----------
 function ownedQtyMap() {
@@ -831,15 +983,18 @@ function openSetInCatalog(id) {
 
 // ---------- vista: deseos ----------
 function renderWish() {
+  const hit = new Set(wishHits());
   const ids = Object.keys(S.wish).filter(id => S.cards.has(id))
-    .sort((a, b) => ((S.setOrder.get(S.cards.get(a).set) ?? 0) - (S.setOrder.get(S.cards.get(b).set) ?? 0)) || ((S.cardPos.get(a) || 0) - (S.cardPos.get(b) || 0)));
+    .sort((a, b) => (hit.has(b) - hit.has(a)) || ((S.setOrder.get(S.cards.get(a).set) ?? 0) - (S.setOrder.get(S.cards.get(b).set) ?? 0)) || ((S.cardPos.get(a) || 0) - (S.cardPos.get(b) || 0)));
   $('#wish-count').textContent = ids.length ? plural(ids.length, 'carta', 'cartas') : '';
   const total = ids.reduce((a, id) => { const c = S.cards.get(id); return a + (marketPrice(c, S.wish[id].lang || defaultLang(c)).value || 0); }, 0);
   $('#wish-summary').classList.toggle('hidden', !ids.length);
-  $('#wish-summary').innerHTML = `<div class="kv"><dt>Coste estimado de tu lista</dt><dd>${eur(total)}</dd></div>`;
+  $('#wish-summary').innerHTML = `<div class="kv"><dt>Coste estimado de tu lista</dt><dd>${eur(total)}</dd></div>
+    ${hit.size ? `<div class="note" style="color:var(--accent)">🔔 ${hit.size === 1 ? '1 carta está' : hit.size + ' cartas están'} a tu precio objetivo o por debajo (salen primero).</div>` : '<div class="note">Abre una carta y ponle un precio objetivo: se marcará aquí cuando baje hasta él.</div>'}`;
   $('#wish-grid').innerHTML = ids.length ? ids.map(id => {
     const c = S.cards.get(id); const lang = S.wish[id].lang || defaultLang(c);
-    return `<button class="tile" data-card="${esc(id)}" data-lang="${lang}">${thumbHTML(c, lang)}<div class="meta"><div class="nm">${esc(cardName(c, lang))}</div><div class="row2"><span>${esc(cardCode(c))}</span><b>${eur(marketPrice(c, lang).value)}</b></div></div></button>`;
+    const t = Number(S.wish[id].target) || 0;
+    return `<button class="tile${hit.has(id) ? ' wish-hit' : ''}" data-card="${esc(id)}" data-lang="${lang}">${thumbHTML(c, lang)}${hit.has(id) ? '<span class="badge hit">¡A tu precio!</span>' : ''}<div class="meta"><div class="nm">${esc(cardName(c, lang))}</div><div class="row2"><span>${esc(cardCode(c))}</span><b>${eur(marketPrice(c, lang).value)}</b></div>${t ? `<div class="row2 target"><span>Objetivo</span><span>${eur(t)}</span></div>` : ''}</div></button>`;
   }).join('') : `<div class="empty-state" style="grid-column:1/-1"><b>Sin deseos todavía</b>Pulsa el corazón en la ficha de una carta para guardarla aquí.</div>`;
 }
 
@@ -868,6 +1023,11 @@ function renderSettings() {
     <div class="settings-row"><div class="txt">Idioma preferido<small>Para nombres, imágenes y al añadir cartas. Las colecciones antiguas solo tienen datos en inglés.</small></div>
       <select id="set-lang">${['es', 'en', 'it'].map(l => `<option value="${l}" ${S.settings.lang === l ? 'selected' : ''}>${LANG_LABEL[l]}</option>`).join('')}</select></div>
   </div></div>
+
+  ${Sync.configured() ? `<div class="settings-group"><h3>Compartir</h3><div class="settings-card">
+    <div class="settings-row"><div class="txt">Compartir mi colección<small>Crea un enlace para que tus amigos vean tus cartas y su valor, sin poder cambiar nada. Es una copia de hoy: si cambias tu colección, vuelve a compartir.</small></div><button class="btn" data-act="share">Compartir</button></div>
+    ${myShares().length ? `<div class="settings-row"><div class="txt">Enlaces compartidos<small>${plural(myShares().length, 'enlace activo', 'enlaces activos')}. Al dejar de compartir dejan de funcionar.</small></div><button class="btn secondary" data-act="unshare">Dejar de compartir</button></div>` : ''}
+  </div></div>` : ''}
 
   <div class="settings-group"><h3>Copia de seguridad</h3><div class="settings-card">
     <div class="settings-row"><div class="txt">Exportar colección<small>Descarga un archivo con todas tus cartas.</small></div><div style="display:flex;gap:6px"><button class="btn secondary" data-act="export-json">JSON</button><button class="btn secondary" data-act="export-csv">CSV</button></div></div>
@@ -974,6 +1134,9 @@ function drawCard(el, card, st) {
         <button class="btn secondary" id="d-wish">${S.wish[card.id] ? '♥ En deseos' : '♡ Deseos'}</button>
         <button class="btn secondary" id="d-cent" type="button">◫ Centrado</button>
       </div>
+      ${S.wish[card.id] ? `<label class="wish-target">Avísame si baja de
+        <span><input id="d-target" type="number" inputmode="decimal" min="0" step="0.01" placeholder="—" value="${S.wish[card.id].target ?? ''}"> €</span></label>
+        ${Number(S.wish[card.id].target) > 0 && mp.value != null ? `<div class="wish-target-st ${mp.value <= S.wish[card.id].target ? 'ok' : ''}">${mp.value <= S.wish[card.id].target ? '✓ Ya está a tu precio o por debajo' : `Ahora está a ${eur(mp.value)}`}</div>` : ''}` : ''}
     </div>
   </div>
 
@@ -1057,6 +1220,14 @@ function drawCard(el, card, st) {
         drawCard(el, card, st);
       },
     });
+  };
+  const tgt = el.querySelector('#d-target');
+  if (tgt) tgt.onchange = () => {
+    const v = parseFloat(String(tgt.value).replace(',', '.'));
+    if (v > 0) S.wish[card.id].target = Math.round(v * 100) / 100; else delete S.wish[card.id].target;
+    save(K.wish, S.wish); Sync.putWish(card.id, S.wish[card.id]);
+    toast(v > 0 ? `Te avisaré cuando baje de ${eur(v)}` : 'Precio objetivo quitado');
+    drawCard(el, card, st); updateWishBadge();
   };
   el.querySelector('#d-wish').onclick = () => {
     if (S.wish[card.id]) { delete S.wish[card.id]; Sync.deleteWish(card.id); toast('Quitada de deseos'); }
@@ -1192,7 +1363,9 @@ const Sync = {
     return !!(c && c.apiKey && c.apiKey !== 'TU_API_KEY');
   },
   get active() { return !!(this.db && this.code); },
-  async init() {
+  // Se puede llamar varias veces (al arrancar, al compartir, al ver una colección compartida): se conecta una vez.
+  init() { return this._p || (this._p = this._init()); },
+  async _init() {
     if (!this.configured()) return;
     try {
       const [{ initializeApp }, fs] = await Promise.all([
@@ -1329,6 +1502,7 @@ function bindEvents() {
   $('#catalog-back').onclick = () => { S.ui.multi = null; renderMultiBar(); S.ui.catSet = null; $('#catalog-search').value = ''; saveUI(); renderCatalog(); window.scrollTo({ top: 0 }); };
   $('#catalog-lang').onclick = e => { const b = e.target.closest('[data-lang]'); if (!b) return; S.ui.catLang = b.dataset.lang; renderCatalog(); };
   $('#catalog-filter').onchange = renderCatalog;
+  $('#stats-btn').onclick = openStats;
   $('#home-game').onclick = e => { const b = e.target.closest('[data-g]'); if (!b) return; S.ui.homeGame = b.dataset.g; saveUI(); renderHome(); };
   $('#catalog-game').onclick = e => { const b = e.target.closest('[data-g]'); if (!b) return; S.ui.game = b.dataset.g; saveUI(); renderCatalog(); window.scrollTo({ top: 0 }); };
   $('#catalog-sort').onchange = renderCatalog;
@@ -1373,6 +1547,8 @@ function bindEvents() {
       S.items.forEach(i => Sync.deleteItem(i.id)); Object.keys(S.wish).forEach(id => Sync.deleteWish(id));
       S.items = []; S.wish = {}; save(K.items, []); save(K.wish, {}); toast('Colección borrada'); renderSettings();
     }
+    if (act === 'share') return shareCollection();
+    if (act === 'unshare') return stopSharing();
     if (act === 'create') { try { await Sync.create(); toast('Código creado: ' + Sync.code); } catch (err) { console.warn(err); toast('No se pudo conectar con Firebase'); } renderSettings(); }
     if (act === 'join') {
       const code = prompt('Escribe el código de tu colección (ej. TCG-AB12CD):');
@@ -1409,6 +1585,8 @@ async function boot() {
   await ensureSets([...S.items.map(i => i.setId), ...Object.keys(S.wish).map(setIdOf)]).catch(() => {});
   if (!sheetStack.length) render();
   Sync.init();
+  const ver = new URLSearchParams(location.search).get('ver');
+  if (ver) openViewer(ver);
 
   initScanner({
     cards: () => S.lite || [],

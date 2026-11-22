@@ -171,6 +171,30 @@ async function listSets() {
     }
   }
   for (const j of JAPANESE) out.push({ ...j, serie: 'ja', serieName: 'Japonés', count: 0, langs: ['ja'], detailLang: 'ja', japanese: true });
+  out.push(...await japaneseModernSets().catch(e => { console.warn('  ! japonesas modernas: ' + e.message); return []; }));
+  return out;
+}
+
+// Japonesas modernas (Sol y Luna, Espada y Escudo, Escarlata y Púrpura y Megaevolución): cartas e imágenes de
+// TCGdex en japonés; nombre en inglés, precio en japonés y producto de Cardmarket de CardTrader, que usa los
+// mismos códigos (SV2a, S12a, SM8b…). Sin promos, barajas sueltas ni la colección «MC» (774 cartas de barajas).
+const JP_MODERN = { SV: 'Escarlata y Púrpura', S: 'Espada y Escudo', SM: 'Sol y Luna', M: 'Megaevolución' };
+const JP_SKIP = /(-P$|^CS|^MC$|^WCS|^SVL[NS]$|^SVK$|^M6a$|^SMP2$)/i;
+async function japaneseModernSets() {
+  const ctAll = CT_TOKEN ? ((await ctFetch('/expansions').catch(() => [])) || []).filter(e => e.game_id === 5) : [];
+  const ctByCode = new Map(ctAll.map(e => [e.code.toLowerCase(), e]));
+  const out = [];
+  for (const [serie, label] of Object.entries(JP_MODERN)) {
+    const d = await getJSON(`${TCGDEX}/ja/series/${serie}`).catch(() => null);
+    for (const set of d?.sets || []) {
+      if (JP_SKIP.test(set.id)) continue;
+      const ct = ctByCode.get(set.id.toLowerCase());
+      const enName = ct?.name?.replace(/\s*JP$/, '');
+      out.push({ id: `jp-${set.id.toLowerCase().replace(/[^a-z0-9]/g, '')}`, src: set.id, code: set.id, serie, serieName: `Japonés · ${label}`,
+        count: set.cardCount?.total || 0, langs: ['ja'], detailLang: 'ja', japanese: true, modern: true,
+        ...(ct ? { ct: ct.id } : {}), ...(enName ? { es: `${enName} (japonés)`, en: enName } : {}) });
+    }
+  }
   return out;
 }
 
@@ -367,7 +391,7 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
     // Japonesas antiguas: CardTrader no tiene número de carta y el orden no siempre coincide.
     // Pokémon: por nombre de especie (nº de Pokédex de TCGdex → nombre en inglés del catálogo occidental).
     // Energías: por tipo. Entrenadores: en orden.
-    if (setMeta.ct && setMeta.japanese) {
+    if (setMeta.ct && setMeta.japanese && !setMeta.modern) {
       const species = await speciesNames();
       const singles = bps.filter(b => b.category_id === 73).sort((a, b) => a.id - b.id);
       const free = new Set(cards.map(c => c.id));
@@ -412,6 +436,13 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
           for (const v of card.v || []) if (v.cm === card.cm || (!card.cm && !v.cm && v.t !== 'reverse')) v.cm = cmId;
           card.cm = cmId; changed++;
         }
+      }
+    }
+    if (setMeta.modern) {   // japonesas modernas: nombre en inglés de CardTrader (para buscarlas en inglés)
+      const byId = new Map(cards.map(c => [c.id, c]));
+      for (const bp of bps) {
+        const c0 = byId.get(bpCard.get(bp.id)), en = String(bp.name || '').replace(/\s*\(.*?\)\s*$/, '').trim();
+        if (c0 && en && !c0.name.en) { c0.name.en = en; changed++; }
       }
     }
     // Comprobación por número: a veces el producto de Cardmarket de TCGdex está cruzado entre dos versiones
@@ -464,7 +495,7 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
       if (fixedNum) console.log(`  · ${setMeta.id}: ${fixedNum} enlaces de CardTrader corregidos por número`);
     }
     // Imagen de CardTrader para las cartas que no tienen en ningún otro sitio.
-    const need = new Set(cards.filter(c => (setMeta.ct && setMeta.japanese) || (!c.im && (c.noimg || !setMeta.imgLangs?.length))).map(c => c.id));
+    const need = new Set(cards.filter(c => (setMeta.ct && setMeta.japanese && !setMeta.modern) || (!c.im && (c.noimg || !setMeta.imgLangs?.length))).map(c => c.id));
     if (need.size) for (const bp of bps) {
       const id = bpCard.get(bp.id);
       if (!need.has(id) || !bp.image?.url) continue;
@@ -624,7 +655,7 @@ function cardImageUrl(meta, card) {
   if (card.im) return card.im[0];
   if (!meta.imgLangs?.length || card.noimg) return null;
   const l = meta.imgLangs.includes('en') ? 'en' : meta.imgLangs[0];
-  return `${IMG_BASE}/${l}/${meta.serie}/${meta.id}/${encodeURIComponent(card.num)}/low.webp`;
+  return `${IMG_BASE}/${l}/${meta.serie}/${meta.src || meta.id}/${encodeURIComponent(card.num)}/low.webp`;
 }
 async function loadSharp() {
   try { return (await import(process.env.SHARP_PATH || 'sharp')).default; } catch { return null; }
@@ -779,6 +810,7 @@ async function main() {
       }
       if (!names.es && !s.japanese) names.es = names.en;
       if (s.es) names.es = s.es;
+      if (s.en) names.en = s.en;
       meta = {
         id: s.id, code: s.code || info.abbreviation?.official || s.id.toUpperCase(),
         name: names, langs: s.langs, imgLangs: built.imgLangs,
@@ -786,6 +818,7 @@ async function main() {
         total: info.cardCount?.total || built.cards.length, official: info.cardCount?.official || null,
         release: info.releaseDate || null, logo: info.logo || null, symbol: info.symbol || null,
         japanese: !!s.japanese, ...(s.ct ? { ct: s.ct } : {}), ...(s.logo ? { logoFrom: s.logo } : {}),
+        ...(s.src ? { src: s.src } : {}), ...(s.modern ? { modern: true } : {}),
       };
       cached = { set: meta, cards: built.cards };
       await writeJSON(file, cached);
