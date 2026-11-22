@@ -997,7 +997,7 @@ function drawCard(el, card, st) {
 
   <div class="panel">
     <div class="box-title">CardTrader por idioma <small>más barato en NM</small></div>
-    ${ctAll ? `<table class="lang-prices"><tr><th>Idioma</th><th>Desde (NM)</th><th>Anuncios</th>${hasRev ? '<th>Reverse</th>' : ''}</tr>${ctRows}</table>
+    ${ctAll && ['es', 'en', 'it', 'ja'].some(l => ctAll[l]) ? `<table class="lang-prices"><tr><th>Idioma</th><th>Desde (NM)</th><th>Anuncios</th>${hasRev ? '<th>Reverse</th>' : ''}</tr>${ctRows}</table>
       ${anyBad ? `<div class="note warn">* Precio dudoso: muy pocos anuncios y más del triple de lo normal para esta carta. No se usa para valorar tu colección.</div>` : ''}
       ${anyCond ? `<div class="note">Por estado, el más barato y cuántos hay: <b>NM</b> casi nueva · <b>SP</b> poco jugada · <b>MP</b> bastante jugada · <b>PL</b> jugada · <b>PO</b> muy jugada. Tus cartas se valoran con el precio de su estado.</div>` : ''}`
       : `<div class="note" style="margin-top:0">${S.index.ct ? 'No hay anuncios de esta carta en CardTrader.' : 'Todavía no está conectado CardTrader. Cuando añadamos tu token aparecerá aquí el precio en español, inglés, italiano y japonés.'}</div>`}

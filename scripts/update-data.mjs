@@ -354,6 +354,7 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
   const fallbackKey = (num, name) => (setMeta.japanese ? numKey(num) : `${numKey(num)}|${normName(name).split(' ')[0]}`);
   const out = {};
   let imgAdded = 0, changed = 0;
+  const allLinks = new Map();   // blueprint → carta, de todas las expansiones
   for (const exp of exps) {
     const { bps, market } = await ctExpansion(exp.id);
     const bpCard = new Map();
@@ -474,6 +475,7 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
       need.delete(id);
       imgAdded++;
     }
+    for (const [bpId, cardId] of bpCard) if (!allLinks.has(bpId)) allLinks.set(bpId, cardId);
     for (const [bpId, products] of Object.entries(market)) {
       const cardId = bpCard.get(Number(bpId));
       if (!cardId) continue;
@@ -482,6 +484,8 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
     }
   }
   await recheckFew(out, setMeta);
+  // Enlace a la carta en CardTrader también para las que hoy no tienen anuncios (solo { bp }).
+  for (const [bpId, cardId] of allLinks) if (!out[cardId]) out[cardId] = { bp: bpId };
   // El desglose por estado solo se guarda si hay algo más que NM (así los archivos no crecen de más).
   for (const e of Object.values(out)) for (const l of Object.values(e)) {
     if (typeof l !== 'object' || !l.cc) continue;
@@ -846,6 +850,7 @@ async function main() {
       if (row[7] != null) put(hist.cm, id + 'r', row[7]);
     }
     for (const [cardId, e] of Object.entries(prices.ct || {})) {
+      if (!['es', 'en', 'it', 'ja'].some(l => e[l]?.n)) continue;   // solo enlace, sin anuncios
       const o = hist.ct[cardId] || (hist.ct[cardId] = {});
       for (const l of ['es', 'en', 'it', 'ja']) if (e[l]?.n) put(o, l, e[l].n);
     }
