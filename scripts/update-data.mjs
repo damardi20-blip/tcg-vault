@@ -345,7 +345,8 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
   // Si no casan por id de Cardmarket: por número y nombre (en las japonesas, solo por número,
   // porque CardTrader las tiene con el nombre en inglés y otros ids de Cardmarket).
   const numKey = n => String(n ?? '').split('/')[0].replace(/^0+(?=\w)/, '').toUpperCase();
-  const fallbackKey = (num, name) => (setMeta.japanese ? numKey(num) : `${numKey(num)}|${normName(name)}`);
+  // Primera palabra del nombre: «Pikachu Star» (TCGdex) y «Pikachu ☆ Gold Star» (CardTrader) casan por «pikachu».
+  const fallbackKey = (num, name) => (setMeta.japanese ? numKey(num) : `${numKey(num)}|${normName(name).split(' ')[0]}`);
   const out = {};
   let imgAdded = 0, changed = 0;
   for (const exp of exps) {
@@ -397,7 +398,15 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
     if (rest.size) for (const bp of bps) {
       if (bpCard.has(bp.id) || !bp.fixed_properties?.collector_number) continue;
       const id = rest.get(fallbackKey(bp.fixed_properties.collector_number, bp.name));
-      if (id) bpCard.set(bp.id, id);
+      if (id) {
+        bpCard.set(bp.id, id);
+        // Si la carta tenía un producto de Cardmarket compartido (de otra versión), se usa el que da CardTrader.
+        const card = cards.find(c => c.id === id), cmId = bp.card_market_ids?.[0];
+        if (card && (shared.has(id) || !card.cm) && cmId && cmId !== card.cm) {   // compartido o sin producto
+          for (const v of card.v || []) if (v.cm === card.cm || (!card.cm && !v.cm && v.t !== 'reverse')) v.cm = cmId;
+          card.cm = cmId; changed++;
+        }
+      }
     }
     // Imagen de CardTrader para las cartas que no tienen en ningún otro sitio.
     const need = new Set(cards.filter(c => (setMeta.ct && setMeta.japanese) || (!c.im && (c.noimg || !setMeta.imgLangs?.length))).map(c => c.id));
@@ -744,7 +753,6 @@ async function main() {
       if (c.cm) products.add(c.cm);
       for (const v of c.v || []) if (v.cm) products.add(v.cm);
     }
-    for (const id of products) if (cmg.map.has(id)) prices.cm[id] = cmg.map.get(id);
     if (CT_TOKEN) {
       try {
         const pid = CT_PARENT[s.id] || s.id.replace(/(tg|sv|gg|cc|-c)$/, '');
@@ -754,6 +762,9 @@ async function main() {
         if (ct?.imgAdded || ct?.changed) { await writeJSON(file, cached); if (ct.imgAdded) console.log(`· ${s.id}: ${ct.imgAdded} imágenes de CardTrader`); }
       } catch (e) { console.warn(`  ! CardTrader ${s.id}: ${e.message}`); }
     }
+    // Precio de Cardmarket de cada producto (después de CardTrader, que puede haber corregido alguno)
+    for (const c of cached.cards) { if (c.cm) products.add(c.cm); for (const v of c.v || []) if (v.cm) products.add(v.cm); }
+    for (const id of products) if (cmg.map.has(id)) prices.cm[id] = cmg.map.get(id);
     await writeJSON(path.join(DATA, 'prices', `${s.id}.json`), prices);
 
     // Índice de búsqueda (después de CardTrader, que pone el nombre en inglés a las japonesas antiguas)
