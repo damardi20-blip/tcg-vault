@@ -230,6 +230,8 @@ let ctExpansions = null;
 const CT_PARENT = { sma: 'sm115', rc: 'bw11' };   // subcolecciones → colección madre
 // Colecciones cuyo nombre en CardTrader es distinto: código de su expansión allí.
 const CT_CODE = { exu: 'suf', 'swsh10.5': 'pkmgo', ex7: 'trr', ex4: 'exma' };
+// Colecciones cuyas cartas especiales están en otra expansión de CardTrader (Radiant Collection RC1, RC2…).
+const CT_EXTRA = { g1: ['rc'], bw11: ['rclt'] };
 const ctCache = new Map();   // expansion_id → { bps, market } (varias colecciones comparten expansión)
 const ctFetch = p => getJSON(CT + p, { Authorization: `Bearer ${CT_TOKEN}` });
 const ctSleep = ms => new Promise(r => setTimeout(r, ms));
@@ -257,7 +259,7 @@ function ctExpansionsFor(setMeta, parentMeta) {
     const jp = /japan|\bjp\b/i.test(`${e.name} ${e.code}`);
     if (!!setMeta.japanese !== jp) return false;
     const n = normName(e.name);
-    return e.code === CT_CODE[setMeta.id] || names.has(n) || names.has(n.replace(/ jp$/, '')) || codes.has(normName(e.code));
+    return e.code === CT_CODE[setMeta.id] || CT_EXTRA[setMeta.id]?.includes(e.code) || names.has(n) || names.has(n.replace(/ jp$/, '')) || codes.has(normName(e.code));
   });
 }
 
