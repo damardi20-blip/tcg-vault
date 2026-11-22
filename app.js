@@ -531,11 +531,15 @@ function renderHome() {
   if (vs.estimated && vals.length >= 2) delta.textContent += ' · aprox.';
 
   const gainCls = st.gain > 0 ? 'up' : st.gain < 0 ? 'down' : '';
+  // Valor por juego (solo se enseña si tienes cartas de los dos)
+  const byGame = { pkm: 0, op: 0 };
+  for (const it of S.items) byGame[gameOf(S.sets.get(it.setId || setIdOf(it.cardId)))] += itemTotal(it);
   $('#value-stats').innerHTML = `
     <div class="stat"><b>${st.count}</b><span>Cartas</span></div>
     <div class="stat"><b>${st.unique}</b><span>Distintas</span></div>
     <div class="stat"><b>${st.cost ? eur(st.cost) : '—'}</b><span>Invertido</span></div>
-    <div class="stat"><b class="${gainCls}">${st.cost ? signed(st.gain) : '—'}</b><span>${st.gainPct != null ? 'Ganancia ' + pct(st.gainPct) : 'Ganancia'}</span></div>`;
+    <div class="stat"><b class="${gainCls}">${st.cost ? signed(st.gain) : '—'}</b><span>${st.gainPct != null ? 'Ganancia ' + pct(st.gainPct) : 'Ganancia'}</span></div>
+    ${byGame.op && byGame.pkm ? `<div class="stat"><b>${eur(byGame.pkm)}</b><span>Pokémon</span></div><div class="stat"><b>${eur(byGame.op)}</b><span>One Piece</span></div>` : ''}`;
 
   // Progreso de las colecciones de las que tienes cartas
   const owned = ownedBySet();
@@ -637,6 +641,10 @@ function renderItems() {
 // Los logos de TCGdex vienen sin extensión; los de otras fuentes ya son la dirección completa.
 const setLogo = set => !set.logo ? null : set.logo.startsWith('https://assets.tcgdex.net/') ? `${set.logo}.webp` : set.logo;
 
+// Juego de cada colección: Pokémon ('pkm') o One Piece ('op').
+const gameOf = set => (set?.game === 'op' ? 'op' : 'pkm');
+const curGame = () => (S.ui.game === 'op' ? 'op' : 'pkm');
+
 // ---------- vista: catálogo ----------
 function ownedQtyMap() {
   const m = new Map();
@@ -646,6 +654,8 @@ function ownedQtyMap() {
 
 function renderCatalog() {
   const inSet = S.ui.catSet && S.sets.has(S.ui.catSet);
+  $('#catalog-game').classList.toggle('hidden', inSet);
+  $('#catalog-game').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.g === curGame()));
   $('#catalog-browse').classList.toggle('hidden', inSet);
   $('#catalog-set').classList.toggle('hidden', !inSet);
   $('#catalog-search').placeholder = inSet ? 'Buscar en esta colección (nombre o número)' : 'Buscar en todas las colecciones (nombre, nº, código)';
@@ -656,14 +666,19 @@ function renderCatalog() {
   if (q) return renderGlobalSearch(q);
 
   const owned = ownedBySet();
-  $('#catalog-count').textContent = `${S.index.sets.length} colecciones`;
+  const game = curGame();
+  const list = S.index.sets.filter(s => gameOf(s) === game);
+  $('#catalog-count').textContent = `${list.length} colecciones`;
   let html = '', lastSerie = null;
-  for (const set of S.index.sets) {
+  for (const set of list) {
     if (set.serieName !== lastSerie) {
       lastSerie = set.serieName;
-      const sets = S.index.sets.filter(s => s.serieName === lastSerie);
-      const years = sets.map(s => year(s.release)).filter(Boolean).sort();
-      html += `<div class="era-title">${esc(lastSerie)} <span class="muted">${years.length ? esc(years[0] === years[years.length - 1] ? years[0] : `${years[0]}–${years[years.length - 1]}`) : ''}</span></div>`;
+      if (game === 'op') html += `<div class="era-title">${esc(lastSerie)}</div>`;   // One Piece: por años
+      else {
+        const sets = list.filter(s => s.serieName === lastSerie);
+        const years = sets.map(s => year(s.release)).filter(Boolean).sort();
+        html += `<div class="era-title">${esc(lastSerie)} <span class="muted">${years.length ? esc(years[0] === years[years.length - 1] ? years[0] : `${years[0]}–${years[years.length - 1]}`) : ''}</span></div>`;
+      }
     }
     const have = owned.get(set.id)?.size || 0;
     const logo = setLogo(set);
@@ -688,12 +703,13 @@ async function renderGlobalSearch(q) {
   if (my !== searchToken) return;
   const owned = ownedQtyMap();
   const found = [];
-  for (const c of lite) if (matchesQuery(c, q)) { found.push(c); if (found.length >= 150) break; }
+  const game = curGame();
+  for (const c of lite) if (gameOf(setOf(c)) === game && matchesQuery(c, q)) { found.push(c); if (found.length >= 150) break; }
   found.sort((a, b) => (S.setOrder.get(a.set) ?? 0) - (S.setOrder.get(b.set) ?? 0));
   $('#catalog-count').textContent = found.length >= 150 ? 'más de 150 cartas' : plural(found.length, 'carta', 'cartas');
   box.innerHTML = found.length ? `<div class="grid">${found.map(c => {
     const set = setOf(c);
-    const lang = set.japanese ? 'ja' : S.settings.lang;
+    const lang = set.japanese ? 'ja' : set.langs.includes(S.settings.lang) ? S.settings.lang : set.langs[0];
     const qty = owned.get(c.id);
     return `<button class="tile" data-card="${esc(c.id)}" data-lang="${lang}">${thumbHTML(c, lang)}${qty ? `<span class="badge">×${qty}</span>` : ''}
       <div class="meta"><div class="nm">${esc(cardName(c, lang))}</div><div class="row2"><span>${esc(cardCode(c))}</span><span>${esc(year(set.release))}</span></div></div></button>`;
@@ -795,6 +811,7 @@ function endMulti() {
 
 function openSetInCatalog(id) {
   S.ui.catSet = id;
+  if (S.sets.has(id)) S.ui.game = gameOf(S.sets.get(id));   // al volver, la lista del mismo juego
   $('#catalog-search').value = '';
   $('#catalog-filter').value = '';
   $('#catalog-sort').value = 'num';
@@ -918,7 +935,7 @@ function drawCard(el, card, st) {
   const hasRev = ctAll && Object.values(ctAll).some(x => x?.r);
 
   let anyCond = false, anyBad = false;
-  const ctRows = (set.japanese ? ['ja'] : ['es', 'en', 'it', 'ja']).map(l => {
+  const ctRows = (set.japanese ? ['ja'] : gameOf(set) === 'op' ? ['en'] : ['es', 'en', 'it', 'ja']).map(l => {
     const c = ctAll?.[l];
     const ref = priceRef(card, st.variant, l);
     const bad = isDubious(c?.n, c?.nc, ref);
@@ -1302,6 +1319,7 @@ function bindEvents() {
   $('#catalog-back').onclick = () => { S.ui.multi = null; renderMultiBar(); S.ui.catSet = null; $('#catalog-search').value = ''; saveUI(); renderCatalog(); window.scrollTo({ top: 0 }); };
   $('#catalog-lang').onclick = e => { const b = e.target.closest('[data-lang]'); if (!b) return; S.ui.catLang = b.dataset.lang; renderCatalog(); };
   $('#catalog-filter').onchange = renderCatalog;
+  $('#catalog-game').onclick = e => { const b = e.target.closest('[data-g]'); if (!b) return; S.ui.game = b.dataset.g; saveUI(); renderCatalog(); window.scrollTo({ top: 0 }); };
   $('#catalog-sort').onchange = renderCatalog;
 
   // Clics en cartas y colecciones en cualquier vista

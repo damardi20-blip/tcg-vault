@@ -322,12 +322,13 @@ export async function recognize(canvas, cropped = true, hint = null) {
 const AI = {
   proxy: 'https://script.google.com/macros/s/AKfycbyGhy_bLemfW4j33CsaOJg0nayze1Afm3yZ0C06yfSQogvhz8ex5BAu1XjcfTlypmt3/exec',
 };
-const AI_PROMPT = `Identify this Pokémon TCG card in the photo (it may be inside a sleeve or toploader, with reflections).
+const AI_PROMPT = `Identify this trading card in the photo: it is a Pokémon TCG card or a One Piece Card Game card (it may be inside a sleeve or toploader, with reflections).
 Return ONLY a JSON object with these fields:
-- found: true if a Pokémon TCG card is clearly visible, false otherwise
+- found: true if a Pokémon or One Piece card is clearly visible, false otherwise
+- game: "pokemon" or "onepiece"
 - name_printed: the card name exactly as printed (in the card's language)
 - name_en: the official English name of the card (e.g. "Galarian Meowth", "Crobat G", "Charizard ex")
-- number: the collector number printed at the bottom before the slash (e.g. "141", "047", "TG12"); "" if not visible
+- number: the collector number. Pokémon: printed at the bottom before the slash (e.g. "141", "047", "TG12"). One Piece: the full card code printed at the bottom right (e.g. "OP01-120", "ST10-005", "EB01-012"). "" if not visible
 - total: the number after the slash (e.g. "128"); "" if none
 - set_code: the small set code printed near the number (e.g. "30C", "M6a", "SVI", "PAL"); "" if none
 - language: one of es, en, it, ja, fr, de, pt, other
@@ -382,18 +383,23 @@ export function aiMatch(info) {
   const setWords = new Set(nn(info.set_name_en).split(' ').filter(w => w.length > 2).map(w => w.replace(/s$/, '')));
   // La IA confunde el logo del 25 y el del 30 aniversario: cualquiera de los dos apunta a estas colecciones.
   const STAMP_SETS = ['30th', '30th-c', 'M6a', 'cel25', 'cel25cc'];
+  // One Piece o Pokémon, según lo que diga la IA (si no lo dice, se mira si el número es tipo OP01-120).
+  const op = String(info.game || '').toLowerCase().includes('one') || /^[A-Z]{2,3}\d{2}-\d{3}/i.test(String(info.number || ''));
+  const base = x => String(x || '').toUpperCase().replace(/[A-Z]$/, '');   // OP01-001a → OP01-001 (arte alternativo)
   // Colecciones de reimpresiones que conservan el número original impreso (p. ej. Crobat G 47/127).
   const CLASSIC = ['30th-c', 'cel25cc'];
   const scored = [];
   for (const card of ctx.cards()) {
     const set = sets.get(card.set);
     if (!set) continue;
+    if ((set.game === 'op') !== op) continue;   // solo cartas del mismo juego
     let s = 0;
     const names = Object.values(card.name || {}).map(nn);
     if (names.some(n => n && (n === nameEn || n === namePr))) s += 6;
     else if (names.some(n => n && n.length >= 3 && ((nameEn && (nameEn.includes(n) || n.includes(nameEn))) || (namePr && (namePr.includes(n) || n.includes(namePr)))))) s += 3;
     if (s === 0) continue;   // sin coincidencia de nombre no es candidata
     if (num && numN(card.num) === num) { s += 5; if (total && (total === set.official || total === set.total)) s += 3; }
+    else if (op && num && base(card.num) === base(num)) s += 5;   // misma carta, otra versión (arte alternativo)
     const sc = nn(set.code).replace(/ /g, '');
     if (code && (code === sc || code === nn(set.id).replace(/ /g, ''))) s += 4;
     else if (code && code.length >= 2 && lev(code, sc) <= 1) s += 2;
