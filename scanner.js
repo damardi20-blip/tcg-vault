@@ -19,6 +19,17 @@ export function initScanner(context) {
   ctx = context;
   $('#scan-btn').onclick = () => { added = 0; open(); };
   $('#scanner-close').onclick = close;
+  // Centrado desde la cámara: congela la imagen (con margen alrededor del marco, para que se vea la carta
+  // entera) y abre el análisis de centrado; al cerrarlo se vuelve a la cámara.
+  $('#scanner-cent').onclick = async () => {
+    if (busy) return;
+    const img = cropFromVideo(2000, 0.15);
+    if (!img) { status('La cámara aún no está lista.', 2000); return; }
+    clearTimeout(autoTimer);
+    close();
+    const { openCentering } = await import('./centering.js');
+    openCentering({ title: '', image: img, items: [], toast: m => status(m, 2000), onClose: () => open() });
+  };
   $('#scanner-shot').onclick = () => { noCard = 0; captureFromVideo(); };
   $('#scanner-photo').onclick = () => $('#scanner-file').click();
   $('#scanner-file').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) captureFromFile(f); };

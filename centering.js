@@ -29,21 +29,25 @@ const fmt = v => v.toFixed(1).replace('.', ',');
 
 let st = null;   // estado de la pantalla abierta
 
-export function openCentering({ title, items = [], onSave, toast }) {
-  st = { title, items, onSave, toast, side: 'front', mode: 'normal', img: null, o: null, i: null, sel: null, drag: null, results: {} };
+// `image` (opcional): un lienzo con la foto ya hecha (p. ej. desde la cámara del escáner); si no, se pide.
+// `onClose` (opcional): se llama al cerrar (el escáner lo usa para volver a la cámara).
+export function openCentering({ title, items = [], onSave, toast, image = null, onClose = null }) {
+  st = { title, items, onSave, toast, onClose, side: 'front', mode: 'normal', img: null, o: null, i: null, sel: null, drag: null, results: {} };
   let el = $('#cent');
   if (!el) { el = document.createElement('div'); el.id = 'cent'; el.className = 'cent'; document.body.appendChild(el); }
   document.body.style.overflow = 'hidden';
-  renderStart();
+  if (image) { st.img = image; autoDetect(); renderEditor(); } else renderStart();
 }
 function close() {
+  const after = st?.onClose;
   $('#cent')?.remove();
   document.body.style.overflow = '';
   st = null;
+  after?.();
 }
 
 function header() {
-  return `<div class="cent-bar"><b>Centrado · ${esc(st.title)}</b><button class="icon-btn" id="cent-close" type="button" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`;
+  return `<div class="cent-bar"><b>Centrado${st.title ? ' · ' + esc(st.title) : ''}</b><button class="icon-btn" id="cent-close" type="button" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`;
 }
 function sideSeg() {
   return `<div class="seg small" id="cent-side"><button data-s="front" class="${st.side === 'front' ? 'on' : ''}">Delante</button><button data-s="back" class="${st.side === 'back' ? 'on' : ''}">Detrás</button></div>`;
@@ -198,7 +202,7 @@ function renderEditor() {
       <div class="cent-grades" id="cent-grades"></div>
       <div class="cent-actions">
         <button class="btn secondary" id="cent-redetect" type="button">Intentar detectar</button>
-        <button class="btn secondary" id="cent-new" type="button">Otra foto</button>
+        <button class="btn secondary" id="cent-new" type="button">${st.onClose ? 'Volver a la cámara' : 'Otra foto'}</button>
       </div>
       <div id="cent-save-box"></div>
       <p class="note">Amarillo: borde exterior de la carta. Azul: borde interior del marco. Arrastra cada línea (sale una lupa) o tócala y ajústala con − / +. Las notas son orientativas: solo miden el centrado.</p>
@@ -207,7 +211,7 @@ function renderEditor() {
   el.querySelector('#cent-side').onclick = e => { const b = e.target.closest('[data-s]'); if (b) { st.side = b.dataset.s; renderEditor(); } };
   el.querySelector('#cent-mode').onclick = e => { const b = e.target.closest('[data-m]'); if (b) { st.mode = b.dataset.m; autoDetect(); renderEditor(); } };
   el.querySelector('#cent-redetect').onclick = () => { autoDetect(); renderEditor(); };
-  el.querySelector('#cent-new').onclick = () => { st.img = null; renderStart(); };
+  el.querySelector('#cent-new').onclick = () => { if (st.onClose) close(); else { st.img = null; renderStart(); } };   // desde el escáner: vuelve a la cámara
   setupCanvas();
   update();
 }
@@ -344,7 +348,7 @@ function summaryHTML() {
 
 function renderSaveBox() {
   const box = $('#cent-save-box'); if (!box) return;
-  if (!st.items.length) { box.innerHTML = '<p class="note">Si añades esta carta a tu colección, podrás guardar aquí su centrado.</p>'; return; }
+  if (!st.items.length) { box.innerHTML = `<p class="note">${st.onClose ? 'Para guardar el centrado en una carta de tu colección, ábrela desde «Mis cartas» y pulsa «Centrado».' : 'Si añades esta carta a tu colección, podrás guardar aquí su centrado.'}</p>`; return; }
   box.innerHTML = `<div class="cent-save">
     ${st.items.length > 1 ? `<select id="cent-item">${st.items.map(it => `<option value="${esc(it.id)}">${esc(it.label)}</option>`).join('')}</select>` : ''}
     <button class="btn" id="cent-save" type="button">Guardar en mi carta</button></div>`;
