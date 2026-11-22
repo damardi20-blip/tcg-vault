@@ -159,6 +159,7 @@ function setName(set, lang = S.settings.lang) {
 // URL de la imagen: en el idioma pedido si existe, si no en inglés.
 function cardImg(card, lang = S.settings.lang, quality = 'low') {
   if (card.im) return card.im[quality === 'low' ? 0 : 1];   // imagen de otra fuente (pokemontcg.io)
+  if (card.noimg) return null;   // TCGdex no la tiene
   const set = setOf(card);
   if (!set || !set.imgLangs?.length) return null;
   const l = set.imgLangs.includes(lang) ? lang : set.imgLangs.includes('en') ? 'en' : set.imgLangs[0];
@@ -870,12 +871,28 @@ async function renderGlobalSearch(q) {
   found.sort((a, b) => (S.setOrder.get(a.set) ?? 0) - (S.setOrder.get(b.set) ?? 0));
   $('#catalog-count').textContent = found.length >= 150 ? 'más de 150 cartas' : plural(found.length, 'carta', 'cartas');
   box.innerHTML = found.length ? `<div class="grid">${found.map(c => {
+    c = S.cards.get(c.id) || c;   // si su colección ya está cargada, la carta completa (trae la imagen)
     const set = setOf(c);
     const lang = set.japanese ? 'ja' : set.langs.includes(S.settings.lang) ? S.settings.lang : set.langs[0];
     const qty = owned.get(c.id);
     return `<button class="tile" data-card="${esc(c.id)}" data-lang="${lang}">${thumbHTML(c, lang)}${qty ? `<span class="badge">×${qty}</span>` : ''}
       <div class="meta"><div class="nm">${esc(cardName(c, lang))}</div><div class="row2"><span>${esc(cardCode(c))}</span><span>${esc(year(set.release))}</span></div></div></button>`;
   }).join('')}</div>` : '<div class="empty-state">No hay cartas que coincidan. Prueba con el nombre en inglés o con el número.</div>';
+
+  // Las cartas cuyas imágenes vienen de otras fuentes (japonesas, Classic Collection, Trainer Gallery…) no
+  // traen la imagen en el índice ligero: se carga su colección y se vuelve a pintar el resultado.
+  const need = [...new Set(found.filter(c => !S.cards.has(c.id) && !S.data.has(c.set) && !setOf(c)?.imgLangs?.length).map(c => c.set))];
+  if (need.length) ensureSets(need).then(() => { if (my === searchToken) renderGlobalSearch(q); }).catch(() => {});
+  // Y si una imagen no carga (TCGdex no la tiene), lo mismo: su colección puede traerla de otra web.
+  const later = new Set();
+  let timer = 0;
+  box.querySelectorAll('.tile img').forEach(img => img.addEventListener('error', () => {
+    const id = img.closest('.tile')?.dataset.card, c = id && !S.cards.has(id) && S.lite.find(x => x.id === id);
+    if (!c || S.data.has(c.set)) return;
+    later.add(c.set);
+    clearTimeout(timer);
+    timer = setTimeout(() => ensureSets([...later]).then(() => { if (my === searchToken) renderGlobalSearch(q); }).catch(() => {}), 300);
+  }));
 }
 
 async function renderCatalogSet() {

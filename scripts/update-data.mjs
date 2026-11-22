@@ -567,7 +567,10 @@ async function fillLogos(index) {
 // Colecciones sin ninguna imagen en TCGdex: cada carta recibe `im: [pequeña, grande]` de pokemontcg.io.
 // Se empareja por número y, si la numeración es distinta (p. ej. la Colección Clásica), por nombre.
 async function fillImages(m, cards) {
-  if (m.imgLangs?.length || m.japanese || cards.every(c => c.im)) return 0;
+  if (m.japanese || cards.every(c => c.im)) return 0;
+  // En colecciones con imágenes de TCGdex solo se buscan las que TCGdex no tiene (p. ej. las «H» de Aquapolis).
+  if (m.imgLangs?.length) cards = cards.filter(c => c.noimg && !c.im);
+  if (!cards.length) return 0;
   const ps = await ptcgSetFor(m);
   if (!ps) return 0;
   const list = (await getJSON(`${PTCG}/cards?q=set.id:${ps.id}&pageSize=250&select=number,name,images`, {}, 8).catch(e => { console.warn('  ! ' + e.message); return null; }))?.data || [];
@@ -827,8 +830,23 @@ async function main() {
       meta = cached.set;
     }
     index.push(meta);
+    // Una sola vez por colección: qué cartas anuncia TCGdex con imagen pero en realidad no la tiene (404).
+    if (meta.imgLangs?.length && !cached.imgChk) {
+      const check = cached.cards.filter(c => !c.im && !c.noimg);
+      const ok = await pool(check, 10, async c => {
+        for (const l of meta.imgLangs) {
+          const r = await fetch(`${IMG_BASE}/${l}/${meta.serie}/${meta.src || meta.id}/${encodeURIComponent(c.num)}/low.webp`, { method: 'HEAD' }).catch(() => null);
+          if (!r || r.status !== 404) return true;
+        }
+        return false;
+      });
+      check.forEach((c, i) => { if (!ok[i]) c.noimg = 1; });
+      cached.imgChk = 1;
+      await writeJSON(file, cached);
+      if (ok.some(x => !x)) console.log(`· ${s.id}: ${ok.filter(x => !x).length} cartas sin imagen en TCGdex`);
+    }
     // Colecciones sin imágenes en TCGdex: se buscan en otras webs (antes de CardTrader, que es el último recurso).
-    if (!meta.imgLangs?.length && !cached.cards.every(x => x.im)) {
+    if ((!meta.imgLangs?.length || cached.cards.some(x => x.noimg && !x.im)) && !cached.cards.every(x => x.im)) {
       const n = meta.japanese ? await fillImagesJapanese(meta, cached.cards) : await fillImages(meta, cached.cards);
       if (n) { await writeJSON(file, cached); console.log(`· ${s.id}: ${n} imágenes de ${meta.japanese ? 'Limitless / pokemon-card.com' : 'pokemontcg.io'}`); }
     }
