@@ -68,7 +68,8 @@ function load(key, fallback) {
 function save(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
-const saveUI = () => save(K.ui, S.ui);
+// La selección de «añadir varias» es temporal: no se guarda.
+const saveUI = () => { const { multi, multiVisible, ...ui } = S.ui; save(K.ui, ui); };
 
 // ---------- utilidades ----------
 const $ = sel => document.querySelector(sel);
@@ -473,6 +474,7 @@ function matchesQuery(card, q) {
 
 // ---------- navegación ----------
 function showView(view) {
+  if (S.ui.multi && view !== 'catalog') { S.ui.multi = null; renderMultiBar(); }
   S.ui.view = view; saveUI();
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + view));
   document.querySelectorAll('.tabbar [data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === view));
@@ -719,7 +721,8 @@ async function renderCatalogSet() {
     ${logo ? `<img class="set-head-logo" src="${esc(logo)}" alt="" onerror="this.remove()">` : ''}
     <div class="set-info">${esc(set.serieName)} · ${esc(fmtDate(set.release))} · ${set.total} cartas${set.official && set.official < set.total ? ` (${set.official} + ${set.total - set.official} secretas)` : ''}</div>
     <div class="set-info">Tienes <b>${have}/${cards.length}</b> · valor del set completo ~${eur(value)}</div>
-    ${have ? `<div class="bar"><i style="width:${((have / cards.length) * 100).toFixed(1)}%"></i></div>` : ''}`;
+    ${have ? `<div class="bar"><i style="width:${((have / cards.length) * 100).toFixed(1)}%"></i></div>` : ''}
+    <button class="btn secondary multi-btn" id="multi-toggle" type="button">${S.ui.multi ? 'Cancelar selección' : '＋ Añadir varias cartas'}</button>`;
   $('#catalog-lang').innerHTML = set.langs.map(l => `<button data-lang="${l}" class="${l === lang ? 'on' : ''}">${LANG_SHORT[l]}</button>`).join('');
 
   const q = $('#catalog-search').value;
@@ -734,12 +737,60 @@ async function renderCatalogSet() {
   $('#catalog-count').textContent = plural(cards.length, 'carta', 'cartas');
   $('#catalog-grid').innerHTML = cards.map(c => {
     const qty = owned.get(c.id);
-    return `<button class="tile ${qty ? '' : 'missing'}" data-card="${esc(c.id)}" data-lang="${lang}">
-      ${thumbHTML(c, lang)}${qty ? `<span class="badge">×${qty}</span>` : ''}${S.wish[c.id] ? `<span class="badge wish">${HEART}</span>` : ''}
+    const sel = S.ui.multi?.has(c.id);
+    return `<button class="tile ${qty ? '' : 'missing'}${sel ? ' selected' : ''}" data-card="${esc(c.id)}" data-lang="${lang}">
+      ${thumbHTML(c, lang)}${sel ? '<span class="sel-check">✓</span>' : ''}${qty ? `<span class="badge">×${qty}</span>` : ''}${S.wish[c.id] ? `<span class="badge wish">${HEART}</span>` : ''}
       <div class="meta"><div class="nm">${esc(cardName(c, lang))}</div><div class="row2"><span>${esc(c.num)}</span><b>${eur(marketPrice(c, lang).value)}</b></div></div>
     </button>`;
   }).join('') || `<div class="empty-state" style="grid-column:1/-1">No hay cartas que coincidan.</div>`;
+  $('#multi-toggle').onclick = () => { if (S.ui.multi) endMulti(); else { S.ui.multi = new Set(); renderCatalog(); renderMultiBar(); } };
+  S.ui.multiVisible = cards.map(c => c.id);   // para «seleccionar todas las que se ven»
   saveUI();
+}
+
+// ---------- añadir varias cartas a la vez (dentro de una colección) ----------
+// Se tocan las cartas para marcarlas y abajo se elige idioma y estado; se añade 1 copia de cada una.
+function renderMultiBar() {
+  let bar = document.getElementById('multi-bar');
+  document.body.classList.toggle('multi', !!S.ui.multi);   // deja sitio abajo para la barra
+  if (!S.ui.multi) { bar?.remove(); return; }
+  if (!bar) { bar = document.createElement('div'); bar.id = 'multi-bar'; document.body.appendChild(bar); }
+  const set = S.sets.get(S.ui.catSet);
+  const lang = S.ui.multiLang && set.langs.includes(S.ui.multiLang) ? S.ui.multiLang : S.ui.catLang;
+  const cond = S.ui.multiCond || 'NM';
+  const n = S.ui.multi.size;
+  const total = [...S.ui.multi].reduce((a, id) => a + (marketPrice(S.cards.get(id), lang).value || 0), 0);
+  bar.innerHTML = `
+    <div class="mb-top"><b>${n ? plural(n, 'carta seleccionada', 'cartas seleccionadas') : 'Toca las cartas que quieras añadir'}</b>${n ? `<span class="muted"> · ~${eur(total)}</span>` : ''}
+      <button class="link-btn" id="mb-all" type="button">Todas las que se ven</button></div>
+    <div class="mb-row">
+      <select id="mb-lang" aria-label="Idioma">${set.langs.map(l => `<option value="${l}" ${l === lang ? 'selected' : ''}>${LANG_LABEL[l]}</option>`).join('')}</select>
+      <select id="mb-cond" aria-label="Estado">${CONDITIONS.map(c => `<option value="${c.k}" ${c.k === cond ? 'selected' : ''}>${c.k} · ${c.label}</option>`).join('')}</select>
+    </div>
+    <div class="mb-row"><button class="btn secondary" id="mb-cancel" type="button">Cancelar</button><button class="btn" id="mb-add" type="button" ${n ? '' : 'disabled'}>Añadir ${n || ''}</button></div>`;
+  bar.querySelector('#mb-lang').onchange = e => { S.ui.multiLang = e.target.value; renderMultiBar(); };
+  bar.querySelector('#mb-cond').onchange = e => { S.ui.multiCond = e.target.value; };
+  bar.querySelector('#mb-cancel').onclick = endMulti;
+  bar.querySelector('#mb-all').onclick = () => { for (const id of S.ui.multiVisible || []) S.ui.multi.add(id); renderCatalog(); renderMultiBar(); };
+  bar.querySelector('#mb-add').onclick = () => {
+    const ids = [...S.ui.multi];
+    const cond = bar.querySelector('#mb-cond').value, lang = bar.querySelector('#mb-lang').value;   // lo elegido ahora
+    for (const id of ids) {
+      const card = S.cards.get(id);
+      if (!card) continue;
+      upsertItem({ id: uid(), cardId: id, setId: card.set, lang, variant: defaultVariant(card), cond, qty: 1, graded: null,
+        buy: null, buyDate: null, manual: null, notes: '', added: Date.now() });
+      if (S.wish[id]) { delete S.wish[id]; save(K.wish, S.wish); Sync.deleteWish(id); }
+    }
+    toast(`${plural(ids.length, 'carta añadida', 'cartas añadidas')} (${LANG_SHORT[lang]}, ${cond}) · ~${eur(total)}`);
+    endMulti();
+    render();
+  };
+}
+function endMulti() {
+  S.ui.multi = null;
+  renderMultiBar();
+  if (S.ui.view === 'catalog') renderCatalog();
 }
 
 function openSetInCatalog(id) {
@@ -1226,7 +1277,7 @@ function bindEvents() {
 
   let t = null;
   $('#catalog-search').oninput = () => { clearTimeout(t); t = setTimeout(renderCatalog, 180); };
-  $('#catalog-back').onclick = () => { S.ui.catSet = null; $('#catalog-search').value = ''; saveUI(); renderCatalog(); window.scrollTo({ top: 0 }); };
+  $('#catalog-back').onclick = () => { S.ui.multi = null; renderMultiBar(); S.ui.catSet = null; $('#catalog-search').value = ''; saveUI(); renderCatalog(); window.scrollTo({ top: 0 }); };
   $('#catalog-lang').onclick = e => { const b = e.target.closest('[data-lang]'); if (!b) return; S.ui.catLang = b.dataset.lang; renderCatalog(); };
   $('#catalog-filter').onchange = renderCatalog;
   $('#catalog-sort').onchange = renderCatalog;
@@ -1234,6 +1285,15 @@ function bindEvents() {
   // Clics en cartas y colecciones en cualquier vista
   document.querySelector('main').addEventListener('click', e => {
     const card = e.target.closest('[data-card]');
+    if (card && S.ui.multi && card.closest('#catalog-grid')) {   // modo «añadir varias»: tocar marca/desmarca
+      const id = card.dataset.card;
+      if (S.ui.multi.has(id)) S.ui.multi.delete(id); else S.ui.multi.add(id);
+      card.classList.toggle('selected');
+      const chk = card.querySelector('.sel-check');
+      if (chk) chk.remove(); else card.querySelector('.thumb').insertAdjacentHTML('afterend', '<span class="sel-check">✓</span>');
+      renderMultiBar();
+      return;
+    }
     if (card) return openCard(card.dataset.card, card.dataset.lang);
     const item = e.target.closest('[data-item]');
     if (item) { const it = S.items.find(i => i.id === item.dataset.item); if (it) openCard(it.cardId, it.lang); return; }
