@@ -288,15 +288,15 @@ function gainOf(it) {
   return itemTotal(it) - Number(it.buy) * (it.qty || 1);
 }
 
-function collectionStats() {
+function collectionStats(items = S.items) {
   let value = 0, cost = 0, costValue = 0, count = 0;
-  for (const it of S.items) {
+  for (const it of items) {
     const v = itemTotal(it);
     value += v;
     count += it.qty || 1;
     if (it.buy != null && it.buy !== '') { cost += Number(it.buy) * (it.qty || 1); costValue += v; }
   }
-  const unique = new Set(S.items.map(i => i.cardId)).size;
+  const unique = new Set(items.map(i => i.cardId)).size;
   return { value, cost, gain: costValue - cost, gainPct: cost ? ((costValue - cost) / cost) * 100 : null, count, unique };
 }
 
@@ -319,17 +319,17 @@ function cmEstimate(row, end) {
 }
 
 // Valor de la colección en cada día (con los precios guardados cada día de cada colección).
-function valueSeries() {
+function valueSeries(items = S.items) {
   const all = new Set();
-  for (const it of S.items) for (const d of S.data.get(setIdOf(it.cardId))?.history.dates || []) all.add(d);
+  for (const it of items) for (const d of S.data.get(setIdOf(it.cardId))?.history.dates || []) all.add(d);
   const realDays = all.size;
-  const estimated = realDays < ESTIMATE_UNTIL && S.items.length > 0;
+  const estimated = realDays < ESTIMATE_UNTIL && items.length > 0;
   const end = [...all].sort().pop() || S.index.updated;
   if (estimated) for (let k = -15; k <= 0; k++) all.add(addDays(end, k));
   const dates = [...all].sort();
   const n = dates.length;
   const out = new Array(n).fill(0);
-  for (const it of S.items) {
+  for (const it of items) {
     const card = S.cards.get(it.cardId);
     const d = card && S.data.get(card.set);
     // Se muestra el valor de lo que tienes hoy a lo largo del tiempo (desde la fecha de compra, si la pusiste).
@@ -355,7 +355,7 @@ function valueSeries() {
       out[i] += u * (it.qty || 1);
     }
   }
-  if (n) out[n - 1] = collectionStats().value;
+  if (n) out[n - 1] = collectionStats(items).value;
   return { dates, values: out.map(v => Math.round(v * 100) / 100), estimated };
 }
 
@@ -490,9 +490,9 @@ function render() {
 }
 
 // ---------- vista: colección ----------
-function ownedBySet() {
+function ownedBySet(items = S.items) {
   const m = new Map();
-  for (const it of S.items) {
+  for (const it of items) {
     const sid = setIdOf(it.cardId);
     if (!sid) continue;
     if (!m.has(sid)) m.set(sid, new Set());
@@ -502,10 +502,12 @@ function ownedBySet() {
 }
 
 function renderHome() {
-  const st = collectionStats();
+  const items = homeItems();
+  document.querySelectorAll('#home-game button').forEach(b => b.classList.toggle('on', b.dataset.g === homeGame()));
+  const st = collectionStats(items);
   $('#value-total').textContent = eur(st.value);
 
-  const vs = valueSeries();
+  const vs = valueSeries(items);
   let from = 0;
   if (S.ui.range) {
     const limit = new Date(Date.now() - S.ui.range * 864e5).toISOString().slice(0, 10);
@@ -514,7 +516,7 @@ function renderHome() {
   const vals = vs.values.slice(from);
   const labels = vs.dates.slice(from);
   const delta = $('#value-delta');
-  if (vals.length >= 2 && S.items.length) {
+  if (vals.length >= 2 && items.length) {
     const first = vals.find(v => v > 0) ?? vals[0];
     const diff = st.value - first;
     const rangeTxt = { 7: '7 días', 30: '1 mes', 90: '3 meses', 365: '1 año', 0: 'desde el inicio' }[S.ui.range] || '';
@@ -522,11 +524,11 @@ function renderHome() {
     delta.textContent = `${signed(diff)} (${pct(first ? (diff / first) * 100 : 0)}) · ${rangeTxt}`;
   } else {
     delta.className = 'value-delta muted';
-    delta.textContent = S.items.length ? `Precios del ${fmtDate(S.index.updated)}` : 'Añade cartas para ver su valor';
+    delta.textContent = items.length ? `Precios del ${fmtDate(S.index.updated)}` : 'Añade cartas para ver su valor';
   }
   document.querySelectorAll('#home-range button').forEach(b => b.classList.toggle('on', Number(b.dataset.range) === S.ui.range));
   renderChart($('#home-chart'), labels, [{ name: '', color: '#8b6cff', values: vals }], {
-    emptyMsg: S.items.length ? 'La gráfica se irá completando con un punto cada día.' : 'Aquí verás cómo evoluciona el valor de tu colección.',
+    emptyMsg: items.length ? 'La gráfica se irá completando con un punto cada día.' : 'Aquí verás cómo evoluciona el valor de tu colección.',
   });
   if (vs.estimated && vals.length >= 2) delta.textContent += ' · aprox.';
 
@@ -539,10 +541,10 @@ function renderHome() {
     <div class="stat"><b>${st.unique}</b><span>Distintas</span></div>
     <div class="stat"><b>${st.cost ? eur(st.cost) : '—'}</b><span>Invertido</span></div>
     <div class="stat"><b class="${gainCls}">${st.cost ? signed(st.gain) : '—'}</b><span>${st.gainPct != null ? 'Ganancia ' + pct(st.gainPct) : 'Ganancia'}</span></div>
-    ${byGame.op && byGame.pkm ? `<div class="stat"><b>${eur(byGame.pkm)}</b><span>Pokémon</span></div><div class="stat"><b>${eur(byGame.op)}</b><span>One Piece</span></div>` : ''}`;
+    ${homeGame() === 'all' && byGame.op && byGame.pkm ? `<div class="stat"><b>${eur(byGame.pkm)}</b><span>Pokémon</span></div><div class="stat"><b>${eur(byGame.op)}</b><span>One Piece</span></div>` : ''}`;
 
   // Progreso de las colecciones de las que tienes cartas
-  const owned = ownedBySet();
+  const owned = ownedBySet(items);
   const prog = [...owned.entries()].map(([sid, have]) => {
     const set = S.sets.get(sid);
     const d = S.data.get(sid);
@@ -558,7 +560,7 @@ function renderHome() {
     </button>`).join('') : '';
 
   // Más valiosas
-  const top = [...S.items].sort((a, b) => (itemUnit(b).value || 0) - (itemUnit(a).value || 0)).slice(0, 10);
+  const top = [...items].sort((a, b) => (itemUnit(b).value || 0) - (itemUnit(a).value || 0)).slice(0, 10);
   $('#home-top').innerHTML = top.length >= 3 ? `<div class="section-head"><h2>Tus más valiosas</h2></div><div class="hscroll">${top.map(it => {
     const c = S.cards.get(it.cardId); if (!c) return '';
     return `<button class="tile" data-item="${esc(it.id)}">${thumbHTML(c, it.lang)}<div class="meta"><div class="nm">${esc(cardName(c, it.lang))}</div><div class="row2"><span>${esc(cardCode(c))}</span><b>${eur(itemUnit(it).value)}</b></div></div></button>`;
@@ -579,7 +581,7 @@ function renderItems() {
   const fSet = $('#items-filter-set').value;
   const fLang = $('#items-filter-lang').value;
   const sort = $('#items-sort').value;
-  const list = S.items.filter(it => {
+  const list = homeItems().filter(it => {
     const c = S.cards.get(it.cardId);
     if (!c) return false;
     if (fSet && c.set !== fSet) return false;
@@ -597,7 +599,7 @@ function renderItems() {
   }[sort];
   list.sort(by);
   const totalQty = list.reduce((a, it) => a + (it.qty || 1), 0);
-  $('#items-count').textContent = S.items.length ? `${plural(totalQty, 'carta', 'cartas')} · ${eur(list.reduce((a, it) => a + itemTotal(it), 0))}` : '';
+  $('#items-count').textContent = list.length ? `${plural(totalQty, 'carta', 'cartas')} · ${eur(list.reduce((a, it) => a + itemTotal(it), 0))}` : '';
 
   $('#items-layout').innerHTML = S.ui.layout === 'grid'
     ? '<svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'
@@ -644,6 +646,14 @@ const setLogo = set => !set.logo ? null : set.logo.startsWith('https://assets.tc
 // Juego de cada colección: Pokémon ('pkm') o One Piece ('op').
 const gameOf = set => (set?.game === 'op' ? 'op' : 'pkm');
 const curGame = () => (S.ui.game === 'op' ? 'op' : 'pkm');
+
+// Selector de «Valor de la colección»: Pokémon, One Piece o todo. Se recuerda la última elección
+// (por defecto, Pokémon).
+const homeGame = () => (['pkm', 'op', 'all'].includes(S.ui.homeGame) ? S.ui.homeGame : 'pkm');
+const homeItems = () => {
+  const g = homeGame();
+  return g === 'all' ? S.items : S.items.filter(it => gameOf(S.sets.get(it.setId || setIdOf(it.cardId))) === g);
+};
 
 // ---------- vista: catálogo ----------
 function ownedQtyMap() {
@@ -1319,6 +1329,7 @@ function bindEvents() {
   $('#catalog-back').onclick = () => { S.ui.multi = null; renderMultiBar(); S.ui.catSet = null; $('#catalog-search').value = ''; saveUI(); renderCatalog(); window.scrollTo({ top: 0 }); };
   $('#catalog-lang').onclick = e => { const b = e.target.closest('[data-lang]'); if (!b) return; S.ui.catLang = b.dataset.lang; renderCatalog(); };
   $('#catalog-filter').onchange = renderCatalog;
+  $('#home-game').onclick = e => { const b = e.target.closest('[data-g]'); if (!b) return; S.ui.homeGame = b.dataset.g; saveUI(); renderHome(); };
   $('#catalog-game').onclick = e => { const b = e.target.closest('[data-g]'); if (!b) return; S.ui.game = b.dataset.g; saveUI(); renderCatalog(); window.scrollTo({ top: 0 }); };
   $('#catalog-sort').onchange = renderCatalog;
 

@@ -398,3 +398,4 @@ body.multi main { padding-bottom: 190px; }
 .game-seg { display: flex; margin: 0 0 12px; width: 100%; }
 .game-seg button { flex: 1; }
 .tile .row2 span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-game { margin: 8px 0 6px; }
