@@ -1,11 +1,11 @@
 // Service worker: la app abre al instante con lo guardado y se actualiza por detrás; también permite
 // usarla sin conexión y guarda las imágenes de cartas ya vistas.
-const VERSION = 'v23';
+const VERSION = 'v24';
 const SHELL = `tcgvault-shell-${VERSION}`;
 const DATA = 'tcgvault-data';
 const IMAGES = 'tcgvault-images';
 const SHELL_FILES = [
-  './', 'index.html', 'style.css', 'app.js', 'scanner.js', 'firebase-config.js', 'manifest.json',
+  './', 'index.html', 'style.css', 'app.js', 'scanner.js', 'centering.js', 'firebase-config.js', 'manifest.json',
   'icons/icon-192.png', 'icons/apple-touch-icon.png', 'icons/logo-header.png',
 ];
 

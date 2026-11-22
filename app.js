@@ -945,6 +945,7 @@ function drawCard(el, card, st) {
       <div class="detail-actions">
         <button class="btn" id="d-add"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Añadir</button>
         <button class="btn secondary" id="d-wish">${S.wish[card.id] ? '♥ En deseos' : '♡ Deseos'}</button>
+        <button class="btn secondary" id="d-cent" type="button">◫ Centrado</button>
       </div>
     </div>
   </div>
@@ -952,7 +953,7 @@ function drawCard(el, card, st) {
   ${variants.length > 1 ? `<div class="field" style="margin-top:14px"><span class="lbl">Variante</span><div class="opts" id="d-variant">${variants.map(v => `<button data-v="${esc(v)}" class="${v === st.variant ? 'on' : ''}">${esc(variantLabel(v))}</button>`).join('')}</div></div>` : ''}
 
   ${mine.length ? `<div class="owned"><div class="box-title">Tienes ${mine.reduce((a, i) => a + (i.qty || 1), 0)}</div><div class="list" style="margin-top:0">${mine.map(it => `
-    <button class="row-item" data-edit="${esc(it.id)}"><div class="info"><div class="nm">${it.qty || 1}× ${LANG_LABEL[it.lang]}</div><div class="sub">${it.graded ? esc(`${it.graded.co} ${it.graded.grade}`) : esc(it.cond)} · ${esc(variantLabel(it.variant))}${it.buy != null && it.buy !== '' ? ' · comprada a ' + eur(Number(it.buy)) : ''}</div></div><div class="val"><b>${eur(itemTotal(it))}</b><span class="muted">Editar</span></div></button>`).join('')}</div></div>` : ''}
+    <button class="row-item" data-edit="${esc(it.id)}"><div class="info"><div class="nm">${it.qty || 1}× ${LANG_LABEL[it.lang]}</div><div class="sub">${it.graded ? esc(`${it.graded.co} ${it.graded.grade}`) : esc(it.cond)} · ${esc(variantLabel(it.variant))}${it.buy != null && it.buy !== '' ? ' · comprada a ' + eur(Number(it.buy)) : ''}${centeringText(it)}</div></div><div class="val"><b>${eur(itemTotal(it))}</b><span class="muted">Editar</span></div></button>`).join('')}</div></div>` : ''}
 
   <div class="panel">
     <div class="box-title">Cardmarket <small>${variants.length > 1 ? esc(variantLabel(st.variant)) + ' · ' : ''}${esc(fmtDate(d.prices.updated))}</small></div>
@@ -1017,6 +1018,19 @@ function drawCard(el, card, st) {
   el.querySelectorAll('#d-variant button').forEach(b => b.onclick = () => { st.variant = b.dataset.v; drawCard(el, card, st); });
   el.querySelector('#d-set').onclick = e => { e.preventDefault(); closeSheet(); openSetInCatalog(card.set); };
   el.querySelector('#d-add').onclick = () => openItemForm({ cardId: card.id, lang: st.lang, variant: st.variant });
+  el.querySelector('#d-cent').onclick = async () => {
+    const { openCentering } = await import('./centering.js');
+    openCentering({
+      title: `${cardName(card, lang)} ${cardCode(card)}`, toast,
+      items: S.items.filter(i => i.cardId === card.id).map(i => ({ id: i.id, label: `${i.qty || 1}× ${LANG_LABEL[i.lang]} · ${i.graded ? i.graded.co + ' ' + i.graded.grade : i.cond}` })),
+      onSave: (id, res) => {
+        const it = S.items.find(i => i.id === id);
+        if (!it) return;
+        upsertItem({ ...it, centering: { ...(it.centering || {}), ...res } });
+        drawCard(el, card, st);
+      },
+    });
+  };
   el.querySelector('#d-wish').onclick = () => {
     if (S.wish[card.id]) { delete S.wish[card.id]; Sync.deleteWish(card.id); toast('Quitada de deseos'); }
     else { S.wish[card.id] = { lang: st.lang, added: Date.now() }; Sync.putWish(card.id, S.wish[card.id]); toast('Añadida a deseos'); }
@@ -1040,6 +1054,14 @@ function cardtraderUrl(card) {
   if (bp) return `https://www.cardtrader.com/cards/${bp}`;
   const name = card.name.en || card.name.es || card.name.ja;
   return `https://www.cardtrader.com/search?q=${encodeURIComponent(name + ' ' + card.num)}`;
+}
+
+// Centrado guardado de una carta de la colección, para mostrarlo en su fila (ej. « · centrado 52/48 · 55/45»).
+function centeringText(it) {
+  const c = it.centering?.front || it.centering?.back;
+  if (!c) return '';
+  const f = v => String(Math.round(v));
+  return ` · centrado ${f(c.lr[0])}/${f(c.lr[1])} · ${f(c.tb[0])}/${f(c.tb[1])}${it.centering.front ? '' : ' (detrás)'}`;
 }
 
 // ---------- formulario de carta de la colección ----------

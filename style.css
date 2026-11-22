@@ -370,3 +370,27 @@ table.lang-prices tr.cond-row td { border-top: 0; padding: 0 0 8px; text-align: 
 #multi-bar .mb-row { display: flex; gap: 8px; }
 #multi-bar .mb-row > * { flex: 1; min-width: 0; }
 body.multi main { padding-bottom: 190px; }
+
+/* Análisis de centrado */
+.cent { position: fixed; inset: 0; z-index: 80; background: var(--bg, #0b0d12); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.cent-bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: calc(10px + var(--safe-top)) 16px 10px; background: var(--bg, #0b0d12); border-bottom: 1px solid var(--border); }
+.cent-bar b { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cent-body { padding: 12px 16px calc(24px + var(--safe-bottom)); }
+.cent-top { display: flex; gap: 8px; flex-wrap: wrap; }
+.cent-pick { display: grid; gap: 10px; }
+.cent-pick .btn { text-align: center; }
+.cent-read { display: flex; gap: 10px; margin: 12px 0 10px; }
+.cent-read > div { flex: 1; background: var(--surface-2, #171a22); border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; display: grid; }
+.cent-read .muted { font-size: 12px; }
+.cent-read b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.cent-stage { position: relative; display: flex; justify-content: center; touch-action: none; user-select: none; -webkit-user-select: none; }
+.cent-stage canvas#cent-canvas { border-radius: 8px; touch-action: none; }
+.cent-loupe { position: absolute; width: 180px; height: 180px; pointer-events: none; filter: drop-shadow(0 6px 18px rgba(0,0,0,.7)); }
+.cent-nudge { display: flex; align-items: center; gap: 8px; margin: 10px 0; min-height: 40px; font-size: 14px; }
+.cent-nudge span { flex: 1; }
+.cent-nudge .btn { width: 52px; padding: 8px 0; font-size: 20px; }
+.cent-grades { margin-top: 6px; }
+.cent-table td, .cent-table th { text-align: center !important; }
+.cent-table td:first-child, .cent-table th:first-child { text-align: left !important; }
+.cent-actions, .cent-save { display: flex; gap: 8px; margin-top: 12px; }
+.cent-actions > *, .cent-save > * { flex: 1; min-width: 0; }

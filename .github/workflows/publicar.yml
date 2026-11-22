@@ -79,7 +79,7 @@ jobs:
       - name: Preparar la web
         run: |
           mkdir -p _site
-          cp -r index.html style.css app.js scanner.js firebase-config.js manifest.json sw.js icons data _site/
+          cp -r index.html style.css app.js scanner.js centering.js firebase-config.js manifest.json sw.js icons data _site/
           rm -f _site/data/sigcache.json   # solo hace falta para calcular las huellas
           touch _site/.nojekyll
 
