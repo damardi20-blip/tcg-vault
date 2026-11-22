@@ -608,16 +608,17 @@ async function fillImages(m, cards) {
 const LIMITLESS = 'https://limitlesstcg.nyc3.cdn.digitaloceanspaces.com/tpc';
 const LIMITLESS_ENERGY = { DAR: 'D', FIG: 'F', FIR: 'R', GRA: 'G', LIG: 'L', MET: 'M', PSY: 'P', WAT: 'W' };
 async function fillImagesJapanese(m, cards) {
-  if (!m.japanese || m.imgLangs?.length || m.ct) return 0;   // las antiguas (con `ct`) salen de CardTrader
+  if (!m.japanese || m.imgLangs?.length || (m.ct && !m.modern)) return 0;   // las antiguas (con `ct`) salen de CardTrader
   let n = 0;
   await pool(cards.filter(c => !c.im), 8, async card => {
     const code = /^\d+$/.test(card.num) ? String(parseInt(card.num, 10)) : LIMITLESS_ENERGY[card.num];
     if (!code) return;   // p. ej. las Mew B/G/R no tienen imagen allí
-    const url = size => `${LIMITLESS}/${m.id}/${m.id}_${code}_R_JP_${size}.png`;
+    const folder = m.src || m.id;   // las modernas usan el código de TCGdex (SM4p, S5I…)
+    const url = size => `${LIMITLESS}/${folder}/${folder}_${code}_R_JP_${size}.png`;
     const ok = await fetch(url('SM'), { method: 'HEAD' }).then(r => r.ok).catch(() => false);
     if (ok) { card.im = [url('SM'), url('LG')]; n++; }
   });
-  if (cards.some(c => !c.im)) n += await fillImagesOfficialJP(m, cards);
+  if (cards.some(c => !c.im) && !m.modern) n += await fillImagesOfficialJP(m, cards);
   return n;
 }
 
