@@ -337,14 +337,17 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
   const cmCount = new Map();
   for (const c of cards) if (c.cm) cmCount.set(c.cm, (cmCount.get(c.cm) || 0) + 1);
   const shared = new Set(cards.filter(c => c.cm && cmCount.get(c.cm) > 1).map(c => c.id));
+  // Primero el producto principal de cada carta y luego el de sus variantes, sin pisar los principales
+  // (TCGdex pone a veces a la 1.ª edición de una carta el producto de otra, p. ej. Kangaskhan 21 → 5 holo).
+  for (const c of cards) if (!shared.has(c.id) && c.cm) byCm.set(c.cm, c.id);
   for (const c of cards) {
     if (shared.has(c.id)) continue;
-    if (c.cm) byCm.set(c.cm, c.id);
-    for (const v of c.v || []) { if (v.cm) byCm.set(v.cm, c.id); if (v.ct) byCt.set(v.ct, c.id); }
+    for (const v of c.v || []) { if (v.cm && !byCm.has(v.cm)) byCm.set(v.cm, c.id); if (v.ct) byCt.set(v.ct, c.id); }
   }
   // Si no casan por id de Cardmarket: por número y nombre (en las japonesas, solo por número,
   // porque CardTrader las tiene con el nombre en inglés y otros ids de Cardmarket).
-  const numKey = n => String(n ?? '').split('/')[0].replace(/^0+(?=\w)/, '').toUpperCase();
+  // «H07» = «H7», «SV070» = «SV70», «004/102» = «4»
+  const numKey = n => String(n ?? '').split('/')[0].trim().toUpperCase().replace(/^([A-Z]*)0+(?=\d)/, '$1');
   // Primera palabra del nombre: «Pikachu Star» (TCGdex) y «Pikachu ☆ Gold Star» (CardTrader) casan por «pikachu».
   const fallbackKey = (num, name) => (setMeta.japanese ? numKey(num) : `${numKey(num)}|${normName(name).split(' ')[0]}`);
   const out = {};
@@ -407,6 +410,55 @@ async function cardTraderForSet(setMeta, cards, parentMeta) {
           card.cm = cmId; changed++;
         }
       }
+    }
+    // Comprobación por número: a veces el producto de Cardmarket de TCGdex está cruzado entre dos versiones
+    // de la misma carta (holo/no holo de Jungle, «H» de e-Card, «SL» de Call of Legends, Grookey 10/11…) y la
+    // carta acaba enlazada a la otra versión. Si el número de CardTrader no es el de la carta y en CardTrader
+    // hay una con su número y el mismo nombre, se usa esa. No se aplica a las japonesas ni a las reimpresiones
+    // con el número original impreso («VIV 50»).
+    if (!setMeta.japanese) {
+      const byNumber = new Map();
+      for (const bp of bps) {
+        const n = bp.fixed_properties?.collector_number;
+        if (n && !/\s/.test(n.trim())) (byNumber.get(numKey(n)) || byNumber.set(numKey(n), []).get(numKey(n))).push(bp);
+      }
+      const first = x => normName(x).split(' ')[0];
+      const cardById = new Map(cards.map(c => [c.id, c]));
+      const taken = new Set(bpCard.keys());
+      let fixedNum = 0;
+      for (const [bpId, cardId] of [...bpCard]) {
+        if (bpCard.get(bpId) !== cardId) continue;   // ya se cambió al corregir su pareja
+        const bp = bps.find(b => b.id === bpId), card = cardById.get(cardId);
+        const n = bp?.fixed_properties?.collector_number;
+        if (!card || !n || /\s/.test(n.trim()) || numKey(n) === numKey(card.num)) continue;
+        const name = first(card.name.en || card.name.es);
+        const right = (byNumber.get(numKey(card.num)) || []).find(b => first(b.name) === name);
+        if (!right || right.id === bpId) continue;
+        bpCard.delete(bpId);
+        // Si la versión correcta estaba enlazada a otra carta (cruce), se intercambian.
+        const other = bpCard.get(right.id);
+        bpCard.set(right.id, cardId);
+        if (other && other !== cardId) bpCard.set(bpId, other);
+        // El producto de Cardmarket de TCGdex también estaba cruzado: se usa el que da CardTrader para esta versión.
+        const fixCm = (c, b) => {
+          const cmId = b?.card_market_ids?.[0];
+          if (!c || !cmId || cmId === c.cm) return;
+          for (const v of c.v || []) if (v.cm === c.cm && v.t !== 'reverse') v.cm = cmId;
+          c.cm = cmId; changed++;
+        };
+        fixCm(card, right);
+        if (other && other !== cardId) fixCm(cardById.get(other), bp);
+        fixedNum++;
+      }
+      // Cartas que se han quedado sin enlace: la de CardTrader con su número y su nombre, si está libre.
+      const linked = new Set(bpCard.values());
+      for (const card of cards) {
+        if (linked.has(card.id)) continue;
+        const name = first(card.name.en || card.name.es);
+        const bp = (byNumber.get(numKey(card.num)) || []).find(b => first(b.name) === name && !bpCard.has(b.id));
+        if (bp) { bpCard.set(bp.id, card.id); fixedNum++; }
+      }
+      if (fixedNum) console.log(`  · ${setMeta.id}: ${fixedNum} enlaces de CardTrader corregidos por número`);
     }
     // Imagen de CardTrader para las cartas que no tienen en ningún otro sitio.
     const need = new Set(cards.filter(c => (setMeta.ct && setMeta.japanese) || (!c.im && (c.noimg || !setMeta.imgLangs?.length))).map(c => c.id));
