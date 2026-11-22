@@ -747,7 +747,7 @@ async function shareCollection() {
   localStorage.setItem('tcgvault.shareName', name.trim());
   const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
   const id = Array.from(crypto.getRandomValues(new Uint8Array(24)), b => abc[b % abc.length]).join('');
-  const items = S.items.map(it => [it.cardId, it.lang, it.variant || '', it.cond || '', it.qty || 1, it.graded ? `${it.graded.co} ${it.graded.grade}` : '', it.manual ?? null]);
+  const items = S.items.map(it => JSON.stringify([it.cardId, it.lang, it.variant || '', it.cond || '', it.qty || 1, it.graded ? `${it.graded.co} ${it.graded.grade}` : '', it.manual ?? null]));   // Firestore no admite listas dentro de listas: cada carta va como texto
   try {
     await Sync.fs.setDoc(Sync.fs.doc(Sync.db, 'shares', id), { name: name.trim(), created: Date.now(), items });
   } catch (e) { console.warn(e); toast('No se pudo compartir (revisa las reglas de Firebase)'); return; }
@@ -780,7 +780,7 @@ async function openViewer(id) {
   const snap = Sync.db ? await Sync.fs.getDoc(Sync.fs.doc(Sync.db, 'shares', id)).catch(() => null) : null;
   if (!snap?.exists()) { v.querySelector('.cent-body').innerHTML = '<p>Este enlace ya no existe o no se pudo abrir.</p>'; return; }
   const data = snap.data();
-  const items = (data.items || []).map(([cardId, lang, variant, cond, qty, graded, manual], i) => {
+  const items = (data.items || []).map(x => (typeof x === 'string' ? JSON.parse(x) : x)).map(([cardId, lang, variant, cond, qty, graded, manual], i) => {
     const g = graded ? graded.split(' ') : null;
     return { id: 'v' + i, cardId, setId: setIdOf(cardId), lang, variant, cond, qty, graded: g ? { co: g[0], grade: g.slice(1).join(' ') } : null, manual };
   }).filter(it => it.setId);
