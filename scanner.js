@@ -32,7 +32,7 @@ function status(msg, hold = 0) {
   $('#scanner-status').textContent = msg;
 }
 
-let added = 0;   // cartas añadidas seguidas con «+» (escaneo en cadena)
+let added = 0, lastAiError = null;   // cartas añadidas seguidas con «+» (escaneo en cadena)
 async function open(msg = null) {
   $('#scanner').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
@@ -58,7 +58,7 @@ async function open(msg = null) {
     autoScan();
   } catch (e) {
     console.warn(e);
-    status('No se pudo abrir la cámara (revisa los permisos). Puedes pulsar «Foto».');
+    status(`No se pudo abrir la cámara (${e.name || e.message}). Revisa los permisos o pulsa «Foto».`, 6000);
   }
 }
 
@@ -234,6 +234,7 @@ async function analyze(canvas, cropped, hint = null, wide = null) {
   $('#scanner-shot').disabled = true;
   $('#scanner-frame').classList.add('busy');
   try {
+    lastAiError = null;
     if (aiAvailable()) {
       status('Reconociendo la carta…');
       try {
@@ -255,7 +256,8 @@ async function analyze(canvas, cropped, hint = null, wide = null) {
         }
       } catch (e) {
         console.warn('IA:', e);
-        if (e.quota) status('Se ha agotado el uso gratuito de la IA por hoy; uso el escáner sin IA…');
+        lastAiError = e.quota ? 'cupo gratuito agotado por hoy' : (e.name === 'AbortError' ? 'la IA tardó demasiado' : e.message || String(e));
+        status(e.quota ? 'Se ha agotado el uso gratuito de la IA por hoy; uso el escáner sin IA…' : `La IA no respondió (${lastAiError}); uso el escáner sin IA…`, 2500);
       }
     }
     const { result, text } = await recognize(canvas, cropped, hint);
@@ -263,7 +265,7 @@ async function analyze(canvas, cropped, hint = null, wide = null) {
     showResults(result, text);
   } catch (e) {
     console.error(e);
-    status('No se pudo leer la carta (¿sin conexión la primera vez?). Inténtalo de nuevo.');
+    status(`No se pudo leer la carta (${e.message || e}). Inténtalo de nuevo.`, 4000);
   } finally {
     busy = false;
     $('#scanner-shot').disabled = false;
@@ -718,6 +720,7 @@ function showResults({ candidates, lang }, text) {
         <div id="scan-q-res"></div>
         <button class="btn secondary block" id="scan-again">Escanear otra vez</button>
       </div>
+      ${!text.startsWith('Reconocida con IA') && lastAiError ? `<div class="note warn">La IA no respondió (${esc(lastAiError)}), así que se usó el escáner sin IA.</div>` : ''}
       <details style="margin-top:12px"><summary class="muted">${text.startsWith('Reconocida con IA') ? 'Qué ha leído la IA' : 'Texto leído'}</summary><div class="ocr-text">${esc(text.trim() || '(nada)')}</div></details>
     </div>`;
     el.querySelectorAll('.cand').forEach(b => b.onclick = () => ctx.openCard(b.dataset.id, b.dataset.lang || null));
